@@ -1,0 +1,146 @@
+{
+  "tags": [
+    "Order History"
+  ],
+  "summary": "주문 상세 조회",
+  "description": "특정 주문의 상세 정보를 조회합니다.\n모든 주문 상태(체결 완료, 취소, 거부 등)의 주문을 조회할 수 있습니다.\n\n**Rate Limits Group**: `ORDER_HISTORY`\n",
+  "operationId": "getOrder",
+  "security": [
+    {
+      "oauth2ClientCredentials": []
+    }
+  ],
+  "parameters": [
+    {
+      "$ref": "#/components/parameters/AccountSeq"
+    },
+    {
+      "$ref": "#/components/parameters/OrderId"
+    }
+  ],
+  "responses": {
+    "200": {
+      "description": "성공",
+      "content": {
+        "application/json": {
+          "schema": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ApiResponse"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "result": {
+                    "$ref": "#/components/schemas/Order"
+                  }
+                }
+              }
+            ]
+          },
+          "examples": {
+            "krLimitFilled": {
+              "summary": "국내주식 지정가 매수 — 체결 완료",
+              "value": {
+                "result": {
+                  "orderId": "0d5QIHjmtksbsmM-hBRAgP-ExI8iodGm9fAR5txelPfnMM8XQ_swoJdwL5RpGWMo",
+                  "symbol": "005930",
+                  "side": "BUY",
+                  "orderType": "LIMIT",
+                  "timeInForce": "DAY",
+                  "status": "FILLED",
+                  "price": "70000",
+                  "quantity": "10",
+                  "orderAmount": null,
+                  "currency": "KRW",
+                  "orderedAt": "2026-03-28T09:30:00+09:00",
+                  "canceledAt": null,
+                  "execution": {
+                    "filledQuantity": "10",
+                    "averageFilledPrice": "70000",
+                    "filledAmount": "700000",
+                    "commission": "1400",
+                    "tax": "0",
+                    "filledAt": "2026-03-28T09:31:15+09:00",
+                    "settlementDate": "2026-03-30"
+                  }
+                }
+              }
+            },
+            "usMarketPartialFilled": {
+              "summary": "해외주식 시장가 매수 — 부분 체결",
+              "value": {
+                "result": {
+                  "orderId": "J4lDkgVA-pMiRPOqXd2nBjxTj8hsTVhzOhIth7i1Izq14XYxIg1r_QTDEH7RTL8d",
+                  "symbol": "AAPL",
+                  "side": "BUY",
+                  "orderType": "MARKET",
+                  "timeInForce": "DAY",
+                  "status": "PARTIAL_FILLED",
+                  "price": null,
+                  "quantity": "5",
+                  "orderAmount": null,
+                  "currency": "USD",
+                  "orderedAt": "2026-03-28T23:30:00+09:00",
+                  "canceledAt": null,
+                  "execution": {
+                    "filledQuantity": "3",
+                    "averageFilledPrice": "185.25",
+                    "filledAmount": "555.75",
+                    "commission": "0.99",
+                    "tax": "0",
+                    "filledAt": "2026-03-28T23:30:05+09:00",
+                    "settlementDate": null
+                  }
+                }
+              }
+            },
+            "rejected": {
+              "summary": "주문 거부",
+              "value": {
+                "result": {
+                  "orderId": "Oqqsu76YSdwKZsdKbPwy-D7buUwy-RH2xZYbYSzAyAnlPy48Al5Lb7FyMKwibw4i",
+                  "symbol": "AAPL",
+                  "side": "BUY",
+                  "orderType": "MARKET",
+                  "timeInForce": "DAY",
+                  "status": "REJECTED",
+                  "price": null,
+                  "quantity": "0.5",
+                  "orderAmount": null,
+                  "currency": "USD",
+                  "orderedAt": "2026-03-28T23:30:00+09:00",
+                  "canceledAt": null,
+                  "execution": {
+                    "filledQuantity": "0",
+                    "averageFilledPrice": null,
+                    "filledAmount": null,
+                    "commission": null,
+                    "tax": null,
+                    "filledAt": null,
+                    "settlementDate": null
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "400": {
+      "$ref": "#/components/responses/AccountHeaderRequired"
+    },
+    "401": {
+      "$ref": "#/components/responses/Unauthorized"
+    },
+    "404": {
+      "$ref": "#/components/responses/OrderNotFound"
+    },
+    "429": {
+      "$ref": "#/components/responses/RateLimitExceeded"
+    },
+    "500": {
+      "$ref": "#/components/responses/InternalErrorOrderHistory"
+    }
+  }
+}

@@ -1,0 +1,48 @@
+# Git
+.git
+.gitignore
+
+# Python / Environment
+.venv
+__pycache__
+*.pyc
+.env
+
+# Data & Logs (Volume Mount 권장)
+data/
+logs/
+core/logs/
+data/*.db-journal
+
+node_modules
+
+
+# Documentation
+README.md
+project_context.md
+
+# Documents & KIS openapi 샘플
+Doc_CAVR/
+open-trading-api-main/
+
+# Streamlit
+.streamlit/
+
+# IDE
+.vscode
+.idea
+```
+
+### 5. Poetry 사용 가이드 (참고용)
+
+Poetry로 프로젝트를 관리하려면 루트 디렉토리에서 초기화를 진행해야 합니다. 터미널에서 다음 명령어를 실행하면 `pyproject.toml`이 생성됩니다.
+
+```bash
+# 1. Poetry가 설치되어 있지 않다면 설치
+pip install poetry
+
+# 2. 프로젝트 초기화 (대화형으로 진행됨)
+poetry init
+
+# 3. 의존성 추가 (requirements.txt 내용을 바탕으로)
+poetry add streamlit pandas plotly requests python-dotenv apscheduler pytz openpyxl

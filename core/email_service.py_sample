@@ -1,0 +1,161 @@
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import asyncio
+from datetime import date, timedelta, datetime
+from config.credentials import get_email_credentials
+from core.api_client import UpbitApiClient
+from core.state_manager import app_state
+from core import database as db
+
+async def send_email(to_email: str, subject: str, body: str):
+    """
+    지정된 이메일 주소로 이메일을 비동기적으로 발송합니다.
+    """
+    creds = get_email_credentials()
+    smtp_server = creds.get("smtp_server")
+    smtp_port = creds.get("smtp_port")
+    smtp_user = creds.get("smtp_user")
+    smtp_password = creds.get("smtp_password")
+
+    if not all([smtp_server, smtp_port, smtp_user, smtp_password]):
+        app_state.add_log("[이메일] SMTP 정보가 설정되지 않았습니다.")
+        raise ValueError("SMTP 서버 정보가 올바르게 설정되지 않았습니다.")
+
+    msg = MIMEMultipart()
+    msg['From'] = smtp_user
+    msg['To'] = to_email
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
+    def _send():
+        # Zoho Mail은 포트 465에서 SSL을 사용하므로 SMTP_SSL을 사용합니다.
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+            app_state.add_log(f"[이메일] {to_email}로 이메일을 성공적으로 발송했습니다.")
+
+    await asyncio.to_thread(_send)
+
+async def create_daily_summary_content() -> str:
+    """일일 요약 이메일 본문 내용을 생성합니다."""
+    
+    # [수정] KST 시간대를 기준으로 '어제'를 명확하게 계산합니다.
+    now_kst = datetime.now(db.KST)
+    yesterday = now_kst.date() - timedelta(days=1)
+    yesterday_str = yesterday.strftime("%Y-%m-%d")
+    # [수정] 당월의 시작일도 '어제'를 기준으로 계산하여 일관성을 유지합니다.
+    start_month_str = yesterday.replace(day=1).strftime("%Y-%m-%d")
+
+    # --- 1. 종합 정보 (KRW 기준) ---
+    # [사용자 요청 수정] 대시보드와 동일한 로직으로 총 투자원금을 KRW로 환산하여 계산합니다.
+    # 순수 KRW 입출금만 계산하여 USDT 매매로 인한 이중 계산을 방지합니다.
+    all_deposits = await db.load_all_deposit_history()
+    total_deposit_in_krw = 0
+    for tx in all_deposits:
+        if tx['currency'] == 'KRW':
+            if not (tx.get('description') and ('USDT 매수' in tx['description'] or 'USDT 매도' in tx['description'])):
+                total_deposit_in_krw += tx['amount']
+
+    all_closed_trades = [t for t in await db.load_all_trade_history() if t.get('status') == 'closed' and t.get('profit') is not None]
+    
+    # KRW로 환산된 총 누적 실현손익
+    total_realized_profit_krw = await db.get_profit_for_period_in_krw("1970-01-01", yesterday_str)
+    total_assets_excluding_unrealized = total_deposit_in_krw + total_realized_profit_krw
+    
+    # app_state에서 최신 총 보유자산 가져오기
+    total_exchange_assets = app_state.total_assets_krw if app_state.total_assets_krw > 0 else total_assets_excluding_unrealized
+    
+    # KRW로 환산된 당월 손익
+    profit_month_total = await db.get_profit_for_period_in_krw(start_month_str, yesterday_str)
+
+    # --- 2. USDT 자산 현황 ---
+    total_deposit_usdt = await db.get_total_deposit('USDT')
+    usdt_trades = [t for t in all_closed_trades if t['ticker'].startswith('USDT-')]
+    total_realized_profit_usdt = sum(t['profit'] for t in usdt_trades)
+    total_assets_excluding_unrealized_usdt = total_deposit_usdt + total_realized_profit_usdt
+    profit_month_usdt = await db.get_profit_for_period(start_month_str, yesterday_str, market_filter='USDT')
+
+
+    # --- 2. 손익 분석 ---
+    # 전체 손익
+    profit_yesterday_total = await db.get_profit_for_period_in_krw(yesterday_str, yesterday_str)
+    profit_rate_yesterday_total = (profit_yesterday_total / total_assets_excluding_unrealized) * 100 if total_assets_excluding_unrealized > 0 else 0
+    profit_rate_month_total = (profit_month_total / total_assets_excluding_unrealized) * 100 if total_assets_excluding_unrealized > 0 else 0
+
+    # 전략별 손익
+    # [사용자 요청 수정] 현재 활성화된(실행 중 또는 일시정지) 전략만을 대상으로 손익을 집계합니다.
+    active_strategies = app_state.get_all_strategies()
+    active_strategy_names = list(active_strategies.keys())
+    strategy_pnl_lines = []
+    
+    for name in active_strategy_names:
+        config = await db.load_strategy_config(name)
+        if not config:
+            continue
+        
+        base_currency = config['ticker'].split('-')[0]
+        fmt = db.get_format_string_for_currency(base_currency)
+
+        profit_yesterday_strategy = await db.get_profit_for_period(yesterday_str, yesterday_str, strategy_name=name, market_filter=base_currency)
+        profit_month_strategy = await db.get_profit_for_period(start_month_str, yesterday_str, strategy_name=name, market_filter=base_currency)
+        
+        # 수익률 계산은 KRW로 환산된 총 자산 기준이므로, 개별 전략의 수익률 표시는 의미가 왜곡될 수 있어 제거합니다.
+        # 대신, 절대적인 손익 금액에 집중합니다.
+        # profit_rate_today_strategy = (profit_today_strategy / total_assets_excluding_unrealized) * 100 if total_assets_excluding_unrealized > 0 else 0
+        # profit_rate_month_strategy = (profit_month_strategy / total_assets_excluding_unrealized) * 100 if total_assets_excluding_unrealized > 0 else 0
+
+        strategy_pnl_lines.append(
+            f"    * {name}:\n"
+            f"        - 전일 손익: {profit_yesterday_strategy:{fmt}} {base_currency}\n"
+            f"        - 당월 손익: {profit_month_strategy:{fmt}} {base_currency}"
+        )
+
+    # --- 이메일 본문 조합 ---
+    email_body = f"""
+안녕하세요, [업비트] 그리드 자동매매 대시보드 일일 현황입니다.
+({yesterday.strftime('%Y-%m-%d')} 기준)
+
+==============================
+종합 정보
+==============================
+- 당월 손익 (KRW 환산): {profit_month_total:,.0f} KRW
+- 총자산 (미실현손익 제외): {total_assets_excluding_unrealized:,.0f} KRW
+- 총 보유자산 (거래소): {total_exchange_assets:,.0f} KRW
+- 총 누적 실현손익 (KRW 환산): {total_realized_profit_krw:,.0f} KRW
+
+==============================
+USDT 자산 현황
+==============================
+- 당월 손익 (USDT): {profit_month_usdt:,.2f} USDT
+- 총자산 (USDT, 미실현손익 제외): {total_assets_excluding_unrealized_usdt:,.2f} USDT
+- 누적 실현손익 (USDT): {total_realized_profit_usdt:,.2f} USDT
+
+==============================
+손익 분석
+==============================
+1. 전체 손익 (KRW 환산 기준)
+  - 전일 손익: {profit_yesterday_total:,.0f} KRW ({profit_rate_yesterday_total:.4f}%)
+  - 당월 손익: {profit_month_total:,.0f} KRW ({profit_rate_month_total:.4f}%)
+
+2. 전략별 손익
+{chr(10).join(strategy_pnl_lines) if strategy_pnl_lines else "  (거래 내역이 있는 전략이 없습니다.)"}
+
+
+오늘도 성공적인 투자를 기원합니다.
+"""
+    return email_body.strip()
+
+async def send_daily_summary_to_all_users():
+    """모든 사용자에게 일일 요약 이메일을 발송합니다."""
+    user_emails = await db.get_all_user_emails()
+    if not user_emails:
+        app_state.add_log("[이메일] 발송할 사용자가 없습니다.")
+        return
+
+    subject = f"[업비트] [{datetime.now(db.KST).date().strftime('%Y-%m-%d')}] 그리드 대시보드 일일 현황"
+    body = await create_daily_summary_content()
+
+    for email in user_emails:
+        await send_email(email, subject, body)
+        await asyncio.sleep(1) # API Rate Limit 방지를 위해 약간의 딜레이 추가

@@ -1,0 +1,514 @@
+import streamlit as st
+import re
+import bcrypt
+import secrets
+import string
+import asyncio
+import time, pytz
+from datetime import datetime, timedelta
+
+import extra_streamlit_components as stx
+import os
+# dashboard의 전역 컨텍스트를 가져오기 위해 import 합니다.
+from web_ui.context import get_global_app_context
+from core.state_manager import app_state
+from core import database as db
+from core.email_service import send_email 
+from config.credentials import get_app_base_url, reload_credentials
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join("env",".env"))
+
+
+KST = pytz.timezone('Asia/Seoul')
+
+
+def is_valid_password(password: str) -> tuple[bool, str]:
+    """비밀번호 유효성 검사"""
+    if len(password) < 8:
+        return False, "비밀번호는 8자 이상이어야 합니다."
+    if not re.search(r"[A-Z]", password):
+        return False, "비밀번호는 대문자를 하나 이상 포함해야 합니다."
+    if not re.search(r"[a-z]", password):
+        return False, "비밀번호는 소문자를 하나 이상 포함해야 합니다."
+    if not re.search(r"\d", password):
+        return False, "비밀번호는 숫자를 하나 이상 포함해야 합니다."
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+        return False, "비밀번호는 특수문자를 하나 이상 포함해야 합니다."
+    return True, "유효한 비밀번호입니다."
+
+def hash_password(password: str) -> bytes:
+    """비밀번호를 해싱하여 반환"""
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+
+def check_password(password: str, hashed: bytes) -> bool:
+    """입력된 비밀번호와 해시된 비밀번호를 비교"""
+    return bcrypt.checkpw(password.encode('utf-8'), hashed)
+
+def generate_temporary_password(length: int = 12) -> str:
+    """임시 비밀번호 생성"""
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+    while True:
+        password = ''.join(secrets.choice(alphabet) for i in range(length))
+        is_valid, _ = is_valid_password(password)
+        if is_valid:
+            return password
+
+def get_session_timeout():
+    """
+    .env 파일에서 세션 타임아웃 값을 읽어옵니다.
+    값이 없거나 숫자가 아니면 기본값 10분을 반환합니다.
+    """
+    try:
+        timeout_minutes = int(os.getenv("SESSION_TIMEOUT", 10))
+        return timeout_minutes * 60  # 초 단위로 변환
+    except (ValueError, TypeError):
+        return 10 * 60 # 기본값 10분
+
+def get_remote_ip() -> str:
+    """Streamlit 앱에 접속한 사용자의 IP 주소를 반환합니다."""
+    # JavaScript를 통해 전달된 IP 주소를 쿼리 파라미터에서 읽어옵니다.
+    return st.query_params.get("ip", "Unknown")
+
+def get_user_agent() -> str:
+    """Streamlit 앱에 접속한 사용자의 User-Agent를 반환합니다."""
+    # JavaScript를 통해 전달된 User-Agent를 쿼리 파라미터에서 읽어옵니다.
+    return st.query_params.get("ua", "Unknown")
+
+def render_login_page():
+    """로그인 및 회원가입 페이지를 렌더링합니다."""
+    # [오류 수정] run_async 헬퍼 함수 정의
+    def run_async(coro):
+        loop = get_global_app_context().get("thread_loop")
+        if loop:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            return future.result(timeout=10)
+        else:
+            raise RuntimeError("백그라운드 이벤트 루프를 찾을 수 없습니다. 앱이 올바르게 초기화되지 않았습니다.")
+
+    st.set_page_config(page_title="[업비트] 로그인 - 그리드 트레이딩 봇", layout="centered")
+    st.title("💰 [업비트] 그리드 자동매매 대시보드")
+    st.write("로그인이 필요합니다.")
+
+    # [AttributeError 해결] JavaScript를 사용하여 클라이언트 IP와 User-Agent를 수집하고
+    # 쿼리 파라미터로 전달하여 서버에서 안정적으로 읽을 수 있도록 합니다.
+    # 이 코드는 페이지가 처음 로드될 때 한 번만 실행됩니다.
+    if "ip_fetched" not in st.session_state:
+        st.session_state.ip_fetched = True
+        js_code = """
+            <script>
+                async function getClientInfo() {
+                    try {
+                        // 1. User Agent 가져오기
+                        const ua = encodeURIComponent(navigator.userAgent);
+
+                        // 2. WebRTC를 이용해 로컬 IP 주소 가져오기 (가장 안정적인 방법)
+                        const pc = new RTCPeerConnection({iceServers: []});
+                        pc.createDataChannel('');
+                        const offer = await pc.createOffer();
+                        await pc.setLocalDescription(offer);
+                        
+                        return new Promise((resolve) => {
+                            pc.onicecandidate = (ice) => {
+                                if (ice && ice.candidate && ice.candidate.candidate) {
+                                    const ipMatch = ice.candidate.candidate.match(/([0-9]{1,3}(\\.[0-9]{1,3}){3}|[a-f0-9]{1,4}(:[a-f0-9]{1,4}){7})/);
+                                    if (ipMatch) {
+                                        pc.close();
+                                        resolve(`ip=${ipMatch[1]}&ua=${ua}`);
+                                    }
+                                }
+                            };
+                        });
+                    } catch (e) {
+                        return `ip=Unknown&ua=${encodeURIComponent(navigator.userAgent)}`;
+                    }
+                }
+
+                // URL에 ip와 ua 파라미터가 없으면 정보 수집 후 리디렉션
+                const params = new URLSearchParams(window.location.search);
+                if (!params.has('ip')) {
+                    getClientInfo().then(info => {
+                        window.location.search = '?' + info;
+                    });
+                }
+            </script>
+        """
+        st.components.v1.html(js_code, height=0)
+    
+    # 탭 순서를 고정하고, 세션 상태에 따라 활성화될 탭을 관리합니다.
+    # Streamlit의 tabs는 동적으로 기본값을 설정하는 기능이 없으므로,
+    # 메시지 전달 방식으로 사용자 경험을 구현합니다.
+    tabs = st.tabs(["로그인", "회원가입"])
+
+    login_tab, register_tab = tabs[0], tabs[1]
+
+    with login_tab:
+        # 회원가입 성공 후 전달된 메시지 표시
+        if 'registration_success_message' in st.session_state:
+            st.success(st.session_state.pop('registration_success_message'))
+
+        # 가입 직후 URL 쿼리 파라미터에 username이 있으면,
+        # 로그인 폼의 사용자 이름 위젯 상태에 값을 직접 설정합니다.
+        # URL 쿼리 파라미터에서 사용자 이름을 가져옵니다.
+        if "username" in st.query_params:
+            # st.text_input의 key를 사용하여 session_state에 직접 값을 할당합니다.
+            st.session_state.login_username = st.query_params["username"]
+            # 한 번 사용한 후에는 URL에서 파라미터를 제거합니다.
+            st.query_params.clear()
+
+        with st.form("login_form"):
+            username = st.text_input("사용자 이름", key="login_username")
+            password = st.text_input("비밀번호", type="password", key="login_password")
+            submitted = st.form_submit_button("로그인")
+
+            if submitted:
+                user = run_async(db.get_user_by_username(username))
+                if user and check_password(password, user['hashed_password']):
+                    st.session_state['logged_in'] = True
+                    st.session_state['username'] = username
+                    st.session_state['is_temporary_password'] = user['is_temporary_password']
+                    
+                    # [요청사항 2] 로그인 성공 시, 마지막 활동 시간 기록
+                    st.session_state.last_action_time = time.time()
+
+                    # [요청사항 2] 로그인 활동 DB에 기록
+                    try:
+                        remote_ip = get_remote_ip()
+                        user_agent = get_user_agent()
+                        run_async(db.log_login_activity(
+                            username=username,
+                            ip_address=remote_ip,
+                            user_agent=user_agent
+                        ))
+                        app_state.add_log(f"[{username}] 로그인 성공. IP: {remote_ip}")
+                    except Exception as e:
+                        # 로그인 기록 실패가 전체 로그인 프로세스를 막아서는 안 됨
+                        app_state.add_log(f"경고: 로그인 기록 실패 - {e}")
+                        print(f"Warning: Failed to log login activity - {e}")
+                    
+                    # 로그인 성공 시 쿠키 설정
+                    _global_app_context = get_global_app_context()
+                    # 쿠키 만료 시간을 KST 기준으로 1일로 설정
+                    expires_at = datetime.now(KST) + timedelta(days=1)
+                    _global_app_context["cookie_manager"].set('grid_trading_auth', username, expires_at=expires_at)
+                    st.rerun()
+                else: 
+                    st.error("사용자 이름 또는 비밀번호가 잘못되었습니다.")
+        
+        st.divider()
+        
+        # "비밀번호를 잊으셨나요?" 버튼 클릭 시 상태에 따라 폼 표시
+        if st.session_state.get('show_forgot_password', False):
+            with st.form("forgot_password_form"):
+                st.subheader("비밀번호 찾기")
+                username_to_reset = st.text_input("사용자 아이디", key="username_to_reset")
+                submitted = st.form_submit_button("재설정 링크 발송")
+
+                if submitted:
+                    user = run_async(db.get_user_by_username(username_to_reset))
+                    if user:
+                        try:
+                            token = secrets.token_urlsafe(32)
+                            expires_at = datetime.now(KST) + timedelta(hours=1) # 1시간 후 만료
+                            run_async(db.set_password_reset_token(user['username'], token, expires_at))
+
+                            base_url = get_app_base_url()
+                            reset_link = f"{base_url}/?reset_token={token}"
+                            subject = "그리드 트레이딩 봇 비밀번호 재설정"
+                            body = f"안녕하세요, {user['username']}님.\n\n비밀번호 재설정을 요청하셨습니다.\n아래 링크를 클릭하여 비밀번호를 재설정하세요. 이 링크는 1시간 동안 유효합니다.\n\n{reset_link}\n\n감사합니다."
+                            run_async(send_email(user['email'], subject, body))
+                        except Exception as e:
+                            st.error(f"이메일 발송 중 오류가 발생했습니다: {e}")
+                    st.success("입력하신 이메일로 비밀번호 재설정 안내를 발송했습니다. (계정이 존재하는 경우)")
+                    st.session_state.show_forgot_password = False # 폼을 다시 숨김
+                    time.sleep(2)
+                    st.rerun()
+        else:
+            if st.button("비밀번호를 잊으셨나요?", key="forgot_password_button"):
+                st.session_state.show_forgot_password = True
+                st.rerun()
+
+    with register_tab:
+        # 가입 신청 성공 시, 성공 메시지를 표시하고 폼을 숨깁니다.
+        if st.session_state.get('registration_complete', False):
+            email = st.session_state.get('registration_email', '입력하신 이메일')
+            st.success(f"**가입 신청 완료**\n\n{email}로 임시 비밀번호를 발송했습니다. \n\n로그인 탭으로 돌아가서 계속 진행해주세요.")
+            
+            if st.button("로그인 화면으로 돌아가기"):
+                # 세션 상태를 정리합니다.
+                username_to_pass = st.session_state.pop('registration_username', '')
+                st.session_state.pop('registration_email', None)
+                st.session_state.registration_complete = False
+                # URL 쿼리 파라미터에 아이디를 추가하고, JS로 페이지를 새로고침합니다.
+                st.query_params["username"] = username_to_pass
+                st.components.v1.html("<script>parent.window.location.reload()</script>", height=0)
+
+        else:
+            with st.form("register_form"):
+                reg_username = st.text_input("사용자 이름", key="reg_username")
+                reg_email = st.text_input("이메일 주소", key="reg_email")
+                reg_submitted = st.form_submit_button("가입 신청")
+
+                if reg_submitted:
+                    if not reg_username or not reg_email:
+                        st.error("사용자 이름과 이메일을 모두 입력해주세요.")
+                    elif not re.match(r"[^@]+@[^@]+\.[^@]+", reg_email):
+                        st.error("유효한 이메일 주소를 입력해주세요.")
+                    else:
+                        with st.spinner("가입 처리 및 이메일 발송 중..."):
+                            try:
+                                temp_password = generate_temporary_password()
+                                hashed_password = hash_password(temp_password)
+                                run_async(db.create_user(reg_username, reg_email, hashed_password))
+
+                                subject = "그리드 트레이딩 봇 임시 비밀번호 발급"
+                                body = f"안녕하세요, {reg_username}님.\n\n그리드 트레이딩 봇 가입을 환영합니다.\n아래 임시 비밀번호로 로그인 후, 즉시 비밀번호를 변경해주세요.\n\n임시 비밀번호: {temp_password}\n\n감사합니다."
+                                run_async(send_email(reg_email, subject, body))
+                                
+                                # 성공 상태를 세션에 저장하고 rerun하여 메시지를 표시합니다.
+                                st.session_state.registration_complete = True
+                                st.session_state.registration_email = reg_email
+                                st.session_state.registration_username = reg_username # 아이디 저장
+                                st.rerun()
+                            except ValueError as e:
+                                st.error(str(e))
+                            except Exception as e:
+                                st.error(f"가입 처리 중 오류가 발생했습니다: {e}")
+                                if run_async(db.get_user_by_username(reg_username)):
+                                    run_async(db.delete_user_by_username(reg_username))
+                                    st.info("오류로 인해 가입이 취소되었습니다. 다시 시도해주세요.")
+
+def render_password_change_page():
+    """최초 로그인 시 비밀번호 변경 페이지를 렌더링합니다."""
+    st.set_page_config(page_title="비밀번호 변경", layout="centered")
+    st.title("비밀번호 변경")
+    st.warning("보안을 위해 초기 비밀번호를 변경해야 합니다.")
+    st.info("비밀번호는 8자 이상이며, 대문자, 소문자, 숫자, 특수문자를 각각 하나 이상 포함해야 합니다.")
+
+    # [오류 수정] run_async 헬퍼 함수 정의
+    def run_async(coro):
+        loop = get_global_app_context().get("thread_loop")
+        if loop:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            return future.result(timeout=10)
+        else:
+            raise RuntimeError("백그라운드 이벤트 루프를 찾을 수 없습니다.")
+
+    with st.form("password_change_form"):
+        new_password = st.text_input("새 비밀번호", type="password", key="new_password")
+        confirm_password = st.text_input("새 비밀번호 확인", type="password", key="confirm_password")
+        submit_button = st.form_submit_button("비밀번호 변경")
+
+        if submit_button:
+            if new_password != confirm_password:
+                st.error("비밀번호가 일치하지 않습니다.")
+            else:
+                is_valid, message = is_valid_password(new_password)
+                if not is_valid:
+                    st.error(message)
+                else:
+                    try:
+                        username = st.session_state['username']
+                        new_hashed_password = hash_password(new_password)
+                        run_async(db.update_user_password(username, new_hashed_password))
+                        run_async(db.deactivate_temporary_password(username))
+
+                        st.session_state['is_temporary_password'] = False
+                        st.success("비밀번호가 성공적으로 변경되었습니다. 다시 로그인합니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"비밀번호 변경 중 오류가 발생했습니다: {e}")
+
+def render_profile_page():
+    """개인정보 변경 페이지 (이메일 변경)"""
+    st.set_page_config(page_title="개인정보 변경", layout="centered")
+    st.title("👤 개인정보 변경")
+
+    # [오류 수정] run_async 헬퍼 함수 정의
+    def run_async(coro):
+        loop = get_global_app_context().get("thread_loop")
+        if loop:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            return future.result(timeout=10)
+        else:
+            raise RuntimeError("백그라운드 이벤트 루프를 찾을 수 없습니다.")
+
+    username = st.session_state.get('username')
+    user_info = run_async(db.get_user_by_username(username))
+
+    if not user_info:
+        st.error("사용자 정보를 불러올 수 없습니다.")
+        return
+
+    with st.form("profile_change_form"):
+        st.text_input("사용자 이름", value=username, disabled=True)
+        new_email = st.text_input("이메일 주소", value=user_info['email'])
+        
+        # 'receive_daily_email' 컬럼이 없을 경우를 대비하여 기본값 True(체크됨)로 설정
+        # 체크박스는 '체크되면 True'이므로, '받지 않음'을 위해 not으로 논리를 뒤집습니다.
+        receives_email = bool(user_info.get('receive_daily_email', 1))
+        dont_receive = st.checkbox("일일 현황 메일을 받지 않습니다.", value=not receives_email)
+        
+        submitted = st.form_submit_button("변경사항 저장")
+
+        if submitted:
+            if not re.match(r"[^@]+@[^@]+\.[^@]+", new_email):
+                st.error("유효한 이메일 주소를 입력해주세요.")
+            else:
+                try:
+                    if new_email != user_info['email']:
+                        run_async(db.update_user_email(username, new_email))
+                    run_async(db.update_user_email_preference(username, not dont_receive))
+                    
+                    st.success("개인정보가 성공적으로 변경되었습니다.")
+                    st.session_state.show_profile_page = False # 페이지 닫기
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"이메일 변경 중 오류가 발생했습니다: {e}")
+    
+    if st.button("돌아가기"):
+        st.session_state.show_profile_page = False
+        st.rerun()
+
+def render_password_reset_page(token: str):
+    """비밀번호 재설정 페이지 (토큰 기반)"""
+    st.set_page_config(page_title="비밀번호 재설정", layout="centered")
+    st.title("🔑 비밀번호 재설정")
+
+    # [오류 수정] run_async 헬퍼 함수 정의
+    def run_async(coro):
+        loop = get_global_app_context().get("thread_loop")
+        if loop:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            return future.result(timeout=10)
+        else:
+            raise RuntimeError("백그라운드 이벤트 루프를 찾을 수 없습니다.")
+
+    user = run_async(db.get_user_by_reset_token(token))
+    if not user:
+        st.error("유효하지 않거나 만료된 재설정 링크입니다. 다시 요청해주세요.")
+        return
+
+    st.info(f"**{user['username']}** 님의 비밀번호를 재설정합니다.")
+    st.info("비밀번호는 8자 이상이며, 대문자, 소문자, 숫자, 특수문자를 각각 하나 이상 포함해야 합니다.")
+
+    with st.form("password_reset_form"):
+        new_password = st.text_input("새 비밀번호", type="password", key="reset_new_password")
+        confirm_password = st.text_input("새 비밀번호 확인", type="password", key="reset_confirm_password")
+        submit_button = st.form_submit_button("비밀번호 변경")
+
+        if submit_button:
+            if new_password != confirm_password:
+                st.error("비밀번호가 일치하지 않습니다.")
+            else:
+                is_valid, message = is_valid_password(new_password)
+                if not is_valid:
+                    st.error(message)
+                else:
+                    new_hashed_password = hash_password(new_password)
+                    run_async(db.update_user_password(user['username'], new_hashed_password)) # 이 함수는 토큰을 자동으로 무효화합니다.
+                    st.success("비밀번호가 성공적으로 변경되었습니다. 이제 새 비밀번호로 로그인할 수 있습니다.")
+                    # 성공 후 로그인 페이지로 리디렉션하기 위해 쿼리 파라미터를 제거하고,
+                    # 페이지를 다시 로드합니다.
+                    st.query_params.clear()
+                    st.rerun()
+
+def render_logout_button():
+    """사이드바에 로그아웃 버튼을 렌더링합니다."""
+    st.sidebar.divider()
+
+
+def require_login(func):
+    """
+    페이지 함수를 위한 데코레이터.
+    로그인 상태가 아니면 로그인 페이지를 표시하고,
+    임시 비밀번호 상태이면 비밀번호 변경 페이지를 표시합니다.
+    """
+    def wrapper(*args, **kwargs):
+        # [오류 수정] run_async 헬퍼 함수 정의
+        def run_async(coro):
+            loop = get_global_app_context().get("thread_loop")
+            if loop:
+                future = asyncio.run_coroutine_threadsafe(coro, loop)
+                return future.result(timeout=10)
+            else: # 루프가 없으면 오류를 발생시켜 문제를 즉시 파악하도록 합니다.
+                raise RuntimeError("백그라운드 이벤트 루프를 찾을 수 없습니다. 앱이 올바르게 초기화되지 않았습니다.")
+
+        # DB 초기화는 start_async_loop에서 처리되므로 여기서 호출할 필요가 없습니다.
+        _global_app_context = get_global_app_context()
+
+        # --- 쿠키 관리자 초기화 ---
+        # 쿠키 관리자가 사용되기 전에, 전역 컨텍스트에 없으면 생성합니다.
+        # 이 위치에서 초기화해야 순환 참조나 NoneType 오류를 방지할 수 있습니다.
+        if _global_app_context.get("cookie_manager") is None:
+            _global_app_context["cookie_manager"] = stx.CookieManager()
+
+        # --- 쿠키를 사용한 자동 로그인 처리 ---
+        if not st.session_state.get('logged_in'):
+            username_from_cookie = _global_app_context["cookie_manager"].get('grid_trading_auth')
+
+            if username_from_cookie:
+                user = run_async(db.get_user_by_username(username_from_cookie))
+                if user:
+                    # [핵심 수정] 쿠키로 로그인 성공 시점에 .env 파일을 다시 로드합니다.
+                    reload_credentials()
+
+                    # 쿠키가 유효하면 세션 상태를 복원
+                    st.session_state['logged_in'] = True
+                    st.session_state['username'] = user['username']
+                    st.session_state['is_temporary_password'] = user['is_temporary_password']
+
+                    # [로그인 상태 유지] 쿠키로 로그인 복원 시, 마지막 활동 시간을 현재로 갱신하여
+                    # 페이지 새로고침만으로 세션이 만료되는 것을 방지합니다.
+                    st.session_state.last_action_time = time.time()
+
+                    # [핵심 수정] 로그인 성공 후, 앱이 아직 초기화되지 않았다면 초기화 절차를 시작합니다.
+                    # 이 시점에는 올바른 .env 파일이 로드되었으므로 DB 경로 문제가 발생하지 않습니다.
+                    if not _global_app_context["app_initialized"]:
+                        from web_ui.dashboard import initialize_app_after_login
+                        run_async(initialize_app_after_login())
+
+                    # st.rerun() # 여기서 rerun하면 무한 루프에 빠질 수 있음. wrapper의 func() 호출로 UI가 갱신됩니다.
+
+        # 1. 비밀번호 재설정 토큰 확인
+        if 'reset_token' in st.query_params:
+            token = st.query_params['reset_token']
+            render_password_reset_page(token)
+            return
+
+        if st.session_state.get('is_temporary_password'):
+            render_password_change_page()
+            return
+
+        if st.session_state.get('show_profile_page'):
+            render_profile_page()
+            return
+        
+        # [로그인 상태 유지] 모든 페이지 전환/새로고침 시 로그인 상태를 최종적으로 확인합니다.
+        if not st.session_state.get('logged_in'):
+            render_login_page()
+            return
+
+        # [세션 타임아웃] 로그인 상태가 확인된 후에만 타임아웃을 검사합니다.
+        SESSION_TIMEOUT_SECONDS = get_session_timeout()
+        last_action_time = st.session_state.get('last_action_time', 0)
+        
+        if time.time() - last_action_time > SESSION_TIMEOUT_SECONDS:
+            username = st.session_state.get('username', 'Unknown')
+            st.info(f"세션이 만료되었습니다. 보안을 위해 자동으로 로그아웃됩니다. (마지막 활동: {datetime.fromtimestamp(last_action_time).strftime('%Y-%m-%d %H:%M:%S')})")
+            app_state.add_log(f"[{username}] 세션 타임아웃으로 자동 로그아웃되었습니다.")
+            
+            # 쿠키 삭제 및 세션 초기화
+            _global_app_context = get_global_app_context()
+            _global_app_context["cookie_manager"].delete('grid_trading_auth')
+            st.session_state.clear()
+            time.sleep(3) # 사용자가 메시지를 읽을 시간을 줍니다.
+            st.rerun()
+            return # 로그아웃 후에는 더 이상 진행하지 않습니다.
+
+        # 로그인이 완료되면 원래 함수 실행
+        func(*args, **kwargs)
+        # 로그아웃 버튼 추가
+        render_logout_button()
+
+    return wrapper

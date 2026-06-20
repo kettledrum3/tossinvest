@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  dashboard:
+    image: simji3/toss-dashboard:latest
+    container_name: toss-dashboard
+    command: >
+      streamlit run dashboard.py  --server.port=8501  --server.address=0.0.0.0  --server.enableCORS=false  --server.enableXsrfProtection=false  --browser.gatherUsageStats=false
+    ports:
+      - "8504:8501"
+    volumes:
+      - /home/kc/docker/toss/data:/app/data
+      - /home/kc/docker/toss/logs:/app/logs
+      - /home/kc/docker/toss/env:/app/env
+    restart: on-failure
+    environment:
+      - TZ=Asia/Seoul
+
+  scheduler:
+    image: simji3/toss-scheduler:latest
+    container_name: toss-scheduler
+    command: python core/scheduler.py
+    volumes:
+      - /home/kc/docker/toss/data:/app/data
+      - /home/kc/docker/toss/logs:/app/logs
+      - /home/kc/docker/toss/env:/app/env
+    restart: on-failure
+    depends_on:
+      - dashboard
+    environment:
+      - TZ=Asia/Seoul
+
+# Use same docker network with Nginx Proxy Manager
+networks:
+  default:
+    external: true
+    name: nginx-proxy

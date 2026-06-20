@@ -1,0 +1,13 @@
+streamlit>=1.55.0
+pandas>=2.2.0,<3.0.0
+plotly
+requests
+python-dotenv
+apscheduler
+pytz
+openpyxl
+urllib3
+tabulate
+websockets
+pycryptodome
+matplotlib
