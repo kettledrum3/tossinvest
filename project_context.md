@@ -82,3 +82,32 @@
   2. **현지 서버 빌드**: `docker-compose.yml` 파일 내 각 서비스에 `build: .` 컨텍스트를 추가하고, 대상 서버 내부에서 직접 `docker-compose up -d --build`를 통해 현지 사양(ARM64)으로 자동 빌드 및 구동합니다.
   3. **에뮬레이션 구동**: `docker-compose.yml` 서비스 설정 아래 `platform: linux/amd64` 옵션을 정의하여 QEMU 에뮬레이터 모드로 강제 실행합니다.
 
+---
+
+## 6. Git / GitHub 저장소 설정
+
+### 6.1. 원격 저장소 및 브랜치 구성
+- **원격 저장소 주소**: `https://github.com/kettledrum3/tossinvest.git`
+- **기본 브랜치**: `main`
+
+### 6.2. 초기 저장 및 백업 순서
+1. **로컬 저장소 초기화**:
+   ```bash
+   git init
+   git branch -M main
+   ```
+2. **원격 저장소 추가**:
+   ```bash
+   git remote add origin https://github.com/kettledrum3/tossinvest.git
+   ```
+3. **코드 업로드**:
+   ```bash
+   git add .
+   git commit -m "feat: KIS에서 토스증권 Open API로 마이그레이션 및 초기 설정 완료"
+   git push -u origin main
+   ```
+
+### 6.3. 보안 관련 주의 사항
+- `.gitignore` 설정을 통해 API Key, 계좌 비밀번호가 기재된 환경 변수 파일(`.env`, `env/.env.kr`, `env/.env.us`), DB 파일(`data/*.db`, `*.sqlite3`) 및 WSL 로컬 가상환경(`.venv/`, `env/`) 등 민감한 자산이 GitHub에 커밋되지 않도록 철저히 격리 관리합니다.
+
+
