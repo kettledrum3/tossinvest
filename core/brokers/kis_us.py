@@ -38,13 +38,9 @@ class KisUsBroker(Broker):
             send_telegram_message(f"🇺🇸 <b>[US 브로커 시작]</b>\n연결 계좌: <code>{self.account_no}</code>")
             KisUsBroker._notified = True
 
-        if "-" in self.account_no:
-            self.cano, self.acnt_prdt_cd = self.account_no.split("-")
-        else:
-            self.cano, self.acnt_prdt_cd = self.account_no[:8], self.account_no[8:]
-            
+        self.cano, self.acnt_prdt_cd = self.account_no.split("-") if "-" in self.account_no else (self.account_no[:8], self.account_no[8:])
         self.is_simulation = "openapivts" in self.base_url
-        # SOXL은 NYSE Arca 상장이므로 AMEX(AMS)로 매핑해야 정확한 시세 조회가 가능합니다.
+        self.market = "US"
         self.exchange_map = {"TQQQ": "NASD", "SOXL": "AMEX", "SQQQ": "NASD"}
 
     def _get_exchange(self, symbol: str) -> str:
@@ -214,7 +210,7 @@ class KisUsBroker(Broker):
                 })
         return history
 
-    def get_account_equity(self, symbol: str) -> Tuple[float, float, float]:
+    def _get_account_equity_impl(self, symbol: str) -> Tuple[float, float, float]:
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
         tr_id = "VTTS3012R" if self.is_simulation else "TTTS3012R"
         # 미국 주식 잔고 조회를 위한 페이지네이션 키 수정 (FK100 -> FK200)
@@ -234,14 +230,18 @@ class KisUsBroker(Broker):
             for item in data.get('output1', []):
                 # 종목번호 비교 시 공백 제거 및 대문자 일치 확인
                 if item.get('ovrs_pdno', '').strip() == symbol.strip().upper():
-                    return float(item.get('ovrs_cblc_qty', 0)), float(item.get('pchs_avg_pric', 0)), float(item.get('frcr_evlu_amt2', 0))
+                    qty = float(item.get('ovrs_cblc_qty') or 0.0)
+                    qty = float(int(qty)) # Requirement 4: 수량은 자연수
+                    avg_price = float(item.get('pchs_avg_pric') or 0.0)
+                    eval_amt = float(item.get('frcr_evlu_amt2') or 0.0)
+                    curr_price = self.get_price(symbol)
+                    if curr_price > 0:
+                        eval_amt = qty * curr_price
+                    return qty, avg_price, eval_amt
         except Exception as e:
             logger.error(f"[US] 잔고 조회 중 오류 발생: {e}")
         return 0.0, 0.0, 0.0
 
-    def get_cumulative_buy_amount(self, symbol: str) -> float:
-        shares, avg_price, _ = self.get_account_equity(symbol)
-        return shares * avg_price
 
     def get_cash_pool(self) -> float:
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"

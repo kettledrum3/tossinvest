@@ -269,7 +269,7 @@ class TossBroker(Broker):
             logger.error(f"[TossBroker] 당일 저가 조회 실패 ({symbol}): {e}")
         return self.get_price(symbol)
 
-    def get_account_equity(self, symbol: str) -> Tuple[float, float, float]:
+    def _get_account_equity_impl(self, symbol: str) -> Tuple[float, float, float]:
         """보유 주식 잔고 정보 조회 (GET /api/v1/holdings) -> (shares, avg_price, eval_amt)"""
         try:
             data = self._call_api("GET", "/api/v1/holdings", params={"symbol": symbol})
@@ -278,12 +278,17 @@ class TossBroker(Broker):
             for item in items:
                 if str(item.get("symbol", "")).strip().upper() == symbol.strip().upper():
                     qty = float(item.get("quantity", 0.0))
+                    qty = float(int(qty)) # Requirement 4: 수량은 자연수
                     avg_price = float(item.get("averagePurchasePrice", 0.0))
                     eval_amt = float(item.get("marketValue", {}).get("amount", 0.0))
+                    curr_price = self.get_price(symbol)
+                    if curr_price > 0:
+                        eval_amt = qty * curr_price
                     return qty, avg_price, eval_amt
         except Exception as e:
             logger.error(f"[TossBroker] 잔고 조회 실패 ({symbol}): {e}")
         return 0.0, 0.0, 0.0
+
 
     def get_cash_pool(self) -> float:
         """예수금 조회 (GET /api/v1/buying-power)"""

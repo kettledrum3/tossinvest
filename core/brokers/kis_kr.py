@@ -41,6 +41,7 @@ class KisKrBroker(Broker):
 
         self.cano, self.acnt_prdt_cd = self.account_no.split("-") if "-" in self.account_no else (self.account_no[:8], self.account_no[8:])
         self.is_simulation = "openapivts" in self.base_url
+        self.market = "KR"
         self.etf_tickers = self._load_etf_list()
 
     def _call_api(self, method, url, tr_id, params=None, data=None, extra_headers=None):
@@ -205,7 +206,7 @@ class KisKrBroker(Broker):
             logger.error(f"[KR] 5일 평균가 파싱 오류: {e}")
         return 0.0
 
-    def get_account_equity(self, symbol: str) -> Optional[Tuple[float, float, float]]:
+    def _get_account_equity_impl(self, symbol: str) -> Optional[Tuple[float, float, float]]:
         logger.debug(f"[KR DEBUG] get_account_equity start for {symbol}")
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
         tr_id = "VTTC8434R" if self.is_simulation else "TTTC8434R"
@@ -219,15 +220,16 @@ class KisKrBroker(Broker):
             
         for item in data.get('output1', []):
             if item.get('pdno') == symbol:
-                return float(item.get('hldg_qty')), float(item.get('pchs_avg_pric')), float(item.get('evlu_amt'))
+                qty = float(item.get('hldg_qty') or 0.0)
+                qty = float(int(qty)) # Requirement 4: 수량은 자연수
+                avg_price = float(item.get('pchs_avg_pric') or 0.0)
+                eval_amt = float(item.get('evlu_amt') or 0.0)
+                curr_price = self.get_price(symbol)
+                if curr_price > 0:
+                    eval_amt = qty * curr_price
+                return qty, avg_price, eval_amt
         return 0.0, 0.0, 0.0
 
-    def get_cumulative_buy_amount(self, symbol: str) -> float:
-        res = self.get_account_equity(symbol)
-        if res is None:
-            return 0.0
-        shares, avg_price, _ = res
-        return shares * avg_price
 
     def get_cash_pool(self) -> float:
         """

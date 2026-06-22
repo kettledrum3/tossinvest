@@ -17,9 +17,28 @@ class Broker:
     def get_current_low(self, symbol: str) -> float:
         raise NotImplementedError
     
-    def get_account_equity(self, symbol: str) -> Tuple[float, float, float]:
+    def get_account_equity(self, symbol: str, strategy_name: str = "") -> Tuple[float, float, float]:
         """returns (shares, avg_price, eval_amt)"""
+        if strategy_name:
+            from core.database import get_holdings_from_db
+            market = getattr(self, "market", "US")
+            shares, avg_price, eval_amt = get_holdings_from_db(symbol, market, strategy_name)
+            curr_price = self.get_price(symbol)
+            if curr_price > 0:
+                eval_amt = shares * curr_price
+            return shares, avg_price, eval_amt
+        return self._get_account_equity_impl(symbol)
+
+    def _get_account_equity_impl(self, symbol: str) -> Tuple[float, float, float]:
         raise NotImplementedError
+
+    def get_cumulative_buy_amount(self, symbol: str, strategy_name: str = "") -> float:
+        """Returns the current total cost basis of the holding."""
+        res = self.get_account_equity(symbol, strategy_name=strategy_name)
+        if res is None:
+            return 0.0
+        shares, avg_price, _ = res
+        return shares * avg_price
     
     def get_cash_pool(self) -> float:
         raise NotImplementedError

@@ -1462,5 +1462,60 @@ def get_config(key: str, default: str = None) -> str:
         logger.error(f"Failed to get config {key}: {e}")
         return default
 
+def get_holdings_from_db(symbol: str, market: str, strategy_name: str):
+    """
+    trade_history 테이블의 거래 기록을 시간순으로 정렬하여,
+    특정 전략 별칭(strategy_name)의 보유 수량(shares) 및 평균 단가(avg_price)를 계산합니다.
+    Requirement 4에 따라 수량은 자연수(int)로 간주하며, 0이면 잔고가 없는 것으로 취급합니다.
+    """
+    from typing import Tuple
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # 종목명 포함 형식(Ticker (Name)) 대응을 위한 LIKE 검색 또는 완전 일치 비교
+        cursor.execute('''
+            SELECT side, price, qty, total_amount, fee
+            FROM trade_history 
+            WHERE (symbol=? OR symbol LIKE ?) AND market=? AND strategy_name=?
+            ORDER BY date ASC, id ASC
+        ''', (symbol, f"{symbol} %", market, strategy_name))
+        rows = cursor.fetchall()
+        conn.close()
+        
+        if not rows:
+            return 0.0, 0.0, 0.0
+            
+        shares = 0.0
+        cost = 0.0
+        
+        for side, price, qty, total_amount, fee in rows:
+            qty = int(qty)
+            if qty <= 0:
+                continue
+                
+            if side == "BUY":
+                cost += total_amount
+                shares += qty
+            elif side == "SELL":
+                avg_price = cost / shares if shares > 0 else 0.0
+                cost_of_sold_shares = avg_price * qty
+                shares = max(0, shares - qty)
+                if shares == 0:
+                    cost = 0.0
+                else:
+                    cost = max(0.0, cost - cost_of_sold_shares)
+                    
+        shares_int = int(shares)
+        if shares_int <= 0:
+            return 0.0, 0.0, 0.0
+            
+        final_avg_price = cost / shares if shares > 0 else 0.0
+        return float(shares_int), final_avg_price, float(shares_int) * final_avg_price
+    except Exception as e:
+        logger.error(f"Failed to get holdings from DB for {symbol} ({strategy_name}): {e}")
+        return 0.0, 0.0, 0.0
+
 if __name__ == "__main__":
     init_db()
+

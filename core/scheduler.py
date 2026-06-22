@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import logging
+import json
 from datetime import datetime, timedelta, time as dtime
 import requests
 import shutil
@@ -177,8 +178,14 @@ def run_ca_strategies(market: str = "US", check_existing: bool = False, force: b
             logger.info(f"'{symbol}' CA 전략 처리 완료.")
         except Exception as e:
             handle_api_error_tracking(market, e)
-            logger.error(f"'{symbol}' CA 전략 실행 중 오류 발생: {e}", exc_info=True)
-            send_telegram_message(f"🚨 <b>[CA 에러]</b> {symbol} 전략 실행 중 오류:\n{str(e)}")
+            err_msg = str(e)
+            is_balance_error = any(keyword in err_msg.lower() for keyword in ["잔고", "예수금", "balance", "insufficient", "주문가능금액초과", "가능금액", "잔액"])
+            if is_balance_error:
+                logger.warning(f"'{symbol}' CA 전략 실행 중 잔고 부족 경고: {e}")
+                send_telegram_message(f"⚠️ <b>[CA 경고]</b> {symbol} 전략 실행 중 잔고 부족:\n{err_msg}")
+            else:
+                logger.error(f"'{symbol}' CA 전략 실행 중 오류 발생: {e}", exc_info=True)
+                send_telegram_message(f"🚨 <b>[CA 에러]</b> {symbol} 전략 실행 중 오류:\n{err_msg}")
     logger.info(f"--- [CA-{market}] 전략 자동 실행 종료 ---")
 
 def run_vr_strategies(market: str = "US", check_existing: bool = False, force: bool = False, order_filter: str = None, broker=None):
@@ -240,8 +247,14 @@ def run_vr_strategies(market: str = "US", check_existing: bool = False, force: b
             logger.info(f"'{symbol}' VR 전략 처리 완료.")
         except Exception as e:
             handle_api_error_tracking(market, e)
-            logger.error(f"'{symbol}' VR 전략 실행 중 오류 발생: {e}", exc_info=True)
-            send_telegram_message(f"🚨 <b>[VR 에러]</b> {symbol} 전략 실행 중 오류:\n{str(e)}")
+            err_msg = str(e)
+            is_balance_error = any(keyword in err_msg.lower() for keyword in ["잔고", "예수금", "balance", "insufficient", "주문가능금액초과", "가능금액", "잔액"])
+            if is_balance_error:
+                logger.warning(f"'{symbol}' VR 전략 실행 중 잔고 부족 경고: {e}")
+                send_telegram_message(f"⚠️ <b>[VR 경고]</b> {symbol} 전략 실행 중 잔고 부족:\n{err_msg}")
+            else:
+                logger.error(f"'{symbol}' VR 전략 실행 중 오류 발생: {e}", exc_info=True)
+                send_telegram_message(f"🚨 <b>[VR 에러]</b> {symbol} 전략 실행 중 오류:\n{err_msg}")
     logger.info(f"--- [VR-{market}] 전략 자동 주문 종료 ---")
 
 def is_market_active_for_orders(market: str) -> bool:
@@ -554,6 +567,104 @@ def job_db_backup():
         except Exception as e:
             logger.error(f"📁 [Backup] DB 백업 실패: {e}")
 
+def job_monitor_deposits():
+    """4시간마다 실행: 활성 시장의 예수금을 체크하여 부족 시 스케줄러 일시정지, 충족 시 재개"""
+    try:
+        # DB에서 활성화된 모든 전략 조회
+        from core.database import get_connection, get_holdings_from_db
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT symbol, strategy, market, strategy_name, state_json FROM strategy_state WHERE is_active=1")
+        active_strategies = cursor.fetchall()
+        conn.close()
+
+        if not active_strategies:
+            logger.info("[DepositMonitor] 활성화된 전략이 없습니다.")
+            return
+
+        # 활성화된 시장(KR, US) 확인
+        active_markets = set(st[2] for st in active_strategies)
+        
+        # 시장별 필요 최소 금액 및 보유 주식 유무 계산
+        market_min_required = {"KR": 0.0, "US": 0.0}
+        market_has_shares = {"KR": False, "US": False}
+        for st in active_strategies:
+            symbol, strategy, market, name, state_json = st
+            try:
+                state_data = json.loads(state_json)
+            except:
+                state_data = {}
+            if strategy == "CA":
+                req = float(state_data.get('unit_buy_amount', 0.0))
+                if req > market_min_required[market]:
+                    market_min_required[market] = req
+            elif strategy == "VR":
+                req = 50000.0 if market == "KR" else 50.0
+                if req > market_min_required[market]:
+                    market_min_required[market] = req
+
+            # DB Holdings를 기반으로 현재 보유 중인 주식 수 확인 (매도전용 진행 여부 판단)
+            try:
+                shares, _, _ = get_holdings_from_db(symbol, market, name)
+                if shares > 0:
+                    market_has_shares[market] = True
+            except Exception as e:
+                logger.error(f"[DepositMonitor] {symbol} ({name}) 잔고 조회 실패: {e}")
+
+        # 각 시장별 TossBroker를 통해 실제 예수금 확인
+        market_cash = {}
+        for market in active_markets:
+            try:
+                # 환경변수 로드
+                load_market_env(market)
+                broker = TossBroker(market=market)
+                market_cash[market] = broker.get_cash_pool()
+            except Exception as e:
+                logger.error(f"[DepositMonitor] {market} 예수금 조회 실패: {e}")
+                continue
+
+        # 모든 활성 시장에서 잔고가 부족한지 판단
+        insufficient_markets = []
+        for market in active_markets:
+            if market not in market_cash:
+                continue
+            cash = market_cash[market]
+            required = market_min_required[market]
+            has_shares = market_has_shares.get(market, False)
+            
+            # 예수금이 부족하고, 보유 주식(잔고)도 없는 경우에만 일시정지 대상
+            if cash < required and not has_shares:
+                insufficient_markets.append(market)
+
+        current_status = get_config("scheduler_status", "stopped")
+        
+        # 활성화된 시장 '모두'에서 잔고가 부족한 경우 일시정지 (active_markets가 비어있지 않고, insufficient_markets와 active_markets가 일치할 때)
+        is_all_insufficient = len(insufficient_markets) == len(active_markets) and len(active_markets) > 0
+
+        if is_all_insufficient:
+            if current_status == "running":
+                set_config("scheduler_status", "paused")
+                msg = "⚠️ <b>[시스템 일시정지]</b> 활성화된 모든 시장의 예수금이 부족하여 자동매매가 일시 정지되었습니다.\n"
+                for m in active_markets:
+                    req_str = f"₩{market_min_required[m]:,.0f}" if m == "KR" else f"${market_min_required[m]:,.2f}"
+                    cash_str = f"₩{market_cash[m]:,.0f}" if m == "KR" else f"${market_cash[m]:,.2f}"
+                    msg += f"- {m} 시장: 보유 {cash_str} < 최소필요 {req_str}\n"
+                msg += "예수금이 확보되면 자동으로 재개됩니다."
+                logger.warning(msg.replace("<b>", "").replace("</b>", "").replace("<br>", "\n"))
+                send_telegram_message(msg)
+        else:
+            # 잔고가 채워진 경우 (이전 상태가 paused였고, 현재는 불충분한 시장이 없는 경우)
+            if current_status == "paused" and len(insufficient_markets) == 0:
+                set_config("scheduler_status", "running")
+                msg = "✅ <b>[시스템 재개]</b> 예수금이 보충되어 자동매매가 다시 시작됩니다.\n"
+                for m in active_markets:
+                    cash_str = f"₩{market_cash[m]:,.0f}" if m == "KR" else f"${market_cash[m]:,.2f}"
+                    msg += f"- {m} 시장 예수금: {cash_str}\n"
+                logger.info(msg.replace("<b>", "").replace("</b>", "").replace("<br>", "\n"))
+                send_telegram_message(msg)
+    except Exception as e:
+        logger.error(f"[DepositMonitor] 오류 발생: {e}", exc_info=True)
+
 def start_websocket_client(market: str = "US"):
     """웹소켓 클라이언트 비가동 (TOSS 웹소켓 미지원)"""
     logger.info(f"📡 [{market}] 토스증권 웹소켓 미지원으로 모니터링 스레드를 가동하지 않습니다.")
@@ -715,6 +826,14 @@ def main():
         name='System Shutdown Check'
     )
 
+    # 예수금 모니터링 등록 (4시간마다 실행)
+    scheduler.add_job(
+        job_monitor_deposits,
+        trigger=IntervalTrigger(hours=4),
+        id='deposit_monitor',
+        name='Deposit Monitoring'
+    )
+
     # 4. (옵션) 프로그램 시작 직후 주문 로직은 '실행' 상태일 때만 수행하도록 변경
     # start_checks() -> status 확인 후 run_ca/vr 호출 함수로 분리 가능하나
     # 여기서는 스케줄러 루프 내에서 처리하도록 둠.
@@ -726,8 +845,16 @@ def main():
     # 시작 시 한국 휴장일 상태 즉시 갱신
     job_check_kr_holiday()
     
-    # 시작 시 환율 정보 초기화 (오늘 이미 업데이트했다면 건너뜀)
-    job_update_exchange_rate()
+    # 시작 시 환율 정보 초기화 (오늘 이미 업데이트했다면 건너뜀, KST 20시 ~ 06시 사이에만 실행)
+    kst_now = datetime.now(kr_tz)
+    if kst_now.hour >= 20 or kst_now.hour < 6:
+        logger.info("KST 20시 ~ 06시 사이이므로 시작 시 환율 정보 초기화 작업을 시도합니다.")
+        job_update_exchange_rate()
+    else:
+        logger.info("KST 20시 ~ 06시 외의 시간이므로 시작 시 환율 정보 초기화 작업을 건너뜁니다.")
+
+    # 시작 시 예수금 상태 즉시 확인
+    job_monitor_deposits()
     
     # 시작 시점에 미국 장 운영 시간(07:00~18:00 ET) 내라면 미국 휴장 여부도 즉시 확인
     # 한국 시간 기준 오전 9시~오후 8시 사이(NY 20:00~07:00)의 불필요한 시도를 방지함.

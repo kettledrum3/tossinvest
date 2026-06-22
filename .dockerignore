@@ -22,14 +22,14 @@ README.md
 project_context.md
 
 # Documents & KIS openapi 샘플
-Doc_CAVR/
-open-trading-api-main/
+docs/
+
 
 # Streamlit
 .streamlit/
 
 # IDE
-.vscode
+#.vscode
 .idea
 ```
 

@@ -122,14 +122,14 @@ class Broker:
     def get_current_low(self, symbol: str) -> float:
         raise NotImplementedError
     
-    def get_account_equity(self, symbol: str) -> Optional[Tuple[float, float, float]]:
+    def get_account_equity(self, symbol: str, strategy_name: str = "") -> Optional[Tuple[float, float, float]]:
         """returns (shares, avg_price, eval_amt) or None on failure"""
         raise NotImplementedError
     
     def get_cash_pool(self) -> float:
         raise NotImplementedError
     
-    def get_cumulative_buy_amount(self, symbol: str) -> float:
+    def get_cumulative_buy_amount(self, symbol: str, strategy_name: str = "") -> float:
         """Returns the current total cost basis of the holding."""
         raise NotImplementedError
 
@@ -414,7 +414,7 @@ class CostAveragingEngine:
                 del state_data['cumulative_buy_amount'] # 더 이상 엔진에서 관리하지 않음
             return CAState(**state_data)
         
-        shares, avg_price, _ = self.broker.get_account_equity(self.config.symbol)
+        shares, avg_price, _ = self.broker.get_account_equity(self.config.symbol, strategy_name=self.config.strategy_name)
         
         return CAState(
             symbol=self.config.symbol,
@@ -439,7 +439,7 @@ class CostAveragingEngine:
         if shares is not None and avg_price is not None:
             cumulative_buy_amount = shares * avg_price
         else:
-            cumulative_buy_amount = self.broker.get_cumulative_buy_amount(self.config.symbol) or 0.0
+            cumulative_buy_amount = self.broker.get_cumulative_buy_amount(self.config.symbol, strategy_name=self.config.strategy_name) or 0.0
             
         if self.config.unit_buy_amount > 0:
             raw_turn = cumulative_buy_amount / self.config.unit_buy_amount
@@ -749,7 +749,7 @@ class CostAveragingEngine:
             return self._handle_cycle_finish_and_restart(current_price, date, preview)
 
         # 2. 실시간 잔고(API) 조회
-        equity_data = self.broker.get_account_equity(self.config.symbol)
+        equity_data = self.broker.get_account_equity(self.config.symbol, strategy_name=self.config.strategy_name)
         if equity_data is None or equity_data[0] is None:
             logger.warning(f"[{self.config.symbol}] 잔고 정보 조회 실패. 사이클 처리를 스킵합니다.")
             return self.planned_orders if preview else None
@@ -800,7 +800,7 @@ class CostAveragingEngine:
             return self.planned_orders if preview else None
 
         # 2. 진행 정보 계산
-        cumulative_buy_amount = self.broker.get_cumulative_buy_amount(self.config.symbol)
+        cumulative_buy_amount = self.broker.get_cumulative_buy_amount(self.config.symbol, strategy_name=self.config.strategy_name)
         progress_rate = 0.0
         if self.state.cycle_budget > 0:
             progress_rate = cumulative_buy_amount / self.state.cycle_budget
@@ -1213,7 +1213,7 @@ class ValueRebalancingEngine:
             return VRState(**state_data)
 
         # 초기 상태
-        _, _, eval_amt = self.broker.get_account_equity(self.config.symbol)
+        _, _, eval_amt = self.broker.get_account_equity(self.config.symbol, strategy_name=self.config.strategy_name)
         cash_pool = self.broker.get_cash_pool()
         initial_E = eval_amt + cash_pool
 
@@ -1260,7 +1260,7 @@ class ValueRebalancingEngine:
                 logger.info(f"[{symbol}] VR 미체결 주문 {len(open_orders_pool)}건 감지. 중복 주문은 제외합니다.")
 
         # 1. 최신 잔고 및 시세 정보 조회
-        shares, _, eval_amt = self.broker.get_account_equity(self.config.symbol)
+        shares, _, eval_amt = self.broker.get_account_equity(self.config.symbol, strategy_name=self.config.strategy_name)
         
         # [수정] VR 엔진에서도 할당된 POOL을 기준으로 평가금(E) 계산
         allocated_pool = self.state.pool
@@ -1385,7 +1385,7 @@ class ValueRebalancingEngine:
             return
         day_high = self.broker.get_current_high(symbol=self.config.symbol)
         day_low = self.broker.get_current_low(symbol=self.config.symbol)
-        shares, _, eval_amt = self.broker.get_account_equity(self.config.symbol)
+        shares, _, eval_amt = self.broker.get_account_equity(self.config.symbol, strategy_name=self.config.strategy_name)
         cash_on_account = self.broker.get_cash_pool()
         E = eval_amt + cash_on_account
 
@@ -1456,7 +1456,7 @@ class ValueRebalancingEngine:
 
             # --- 매수 로직 (지정가 예약 매수) ---
             # 매도 후 현금이 늘어났을 수 있으므로 잔고 재확인 (VR은 보통 아침에 일괄 주문이지만, 백테스트는 순차 처리)
-            current_shares_after_sell, _, _ = self.broker.get_account_equity(self.config.symbol)
+            current_shares_after_sell, _, _ = self.broker.get_account_equity(self.config.symbol, strategy_name=self.config.strategy_name)
             
             # 최대 100단계의 매수 주문을 시뮬레이션 (무한 루프 방지)
             for n in range(1, 101):

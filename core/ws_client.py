@@ -637,17 +637,6 @@ class KisWebSocketClient:
         cursor.execute("SELECT strategy, strategy_name FROM order_history WHERE odno=?", (odno,))
         order_info = cursor.fetchone()
 
-        # [수정] 잔고 조회 실패 시에 대한 안전한 처리
-        equity_res = self._broker.get_account_equity(symbol)
-        real_avg_price = 0.0
-        if equity_res and equity_res[1] is not None:
-            real_avg_price = equity_res[1]
-        
-        # Profit calculation variables
-        avg_price_for_profit = real_avg_price # 실제 계좌 평단가 우선 사용
-        realized_profit = 0.0
-        realized_profit_rate = 0.0
-
         # Determine the target strategy for state update
         # If order_info is None, it means the order was not placed by a known strategy (e.g., manual, or strategy deleted)
         # In this case, we should not update any specific strategy's state.
@@ -664,8 +653,21 @@ class KisWebSocketClient:
                 strategy_found_for_log = target_strategy_type
             else:
                 target_strategy_type, target_strategy_alias, strategy_found_for_log = None, None, "MANUAL"
+        else:
+            target_strategy_type, target_strategy_alias, strategy_found_for_log = None, None, "MANUAL"
         
         conn.close()
+
+        # [수정] 잔고 조회 실패 시에 대한 안전한 처리 (strategy_name 추가)
+        equity_res = self._broker.get_account_equity(symbol, strategy_name=target_strategy_alias)
+        real_avg_price = 0.0
+        if equity_res and equity_res[1] is not None:
+            real_avg_price = equity_res[1]
+        
+        # Profit calculation variables
+        avg_price_for_profit = real_avg_price # 실제 계좌 평단가 우선 사용
+        realized_profit = 0.0
+        realized_profit_rate = 0.0
 
         # Only proceed to update strategy state if a specific strategy was identified for the order
         if target_strategy_type and target_strategy_alias:

@@ -1440,7 +1440,7 @@ if mode == "실전 투자":
                 
                 # 정보 조회
                 pool = broker.get_cash_pool()
-                shares, avg_price, eval_amt = broker.get_account_equity(symbol)
+                shares, avg_price, eval_amt = broker.get_account_equity(symbol, strategy_name=strategy_alias)
                 current_price = broker.get_price(symbol)
                 prev_close = broker.get_previous_close(symbol)
                 
@@ -1451,7 +1451,6 @@ if mode == "실전 투자":
                         state_obj = CAState(**state_data)
                         state_obj.avg_price = avg_price
                         state_obj.total_shares = shares
-                        state_obj.pool = pool # [추가] 조회된 실제 예수금을 DB에 저장
                         # T값 재계산 (현재 누적액 기준)
                         if state_obj.unit_buy_amount > 0:
                             invested = avg_price * shares
@@ -1459,8 +1458,6 @@ if mode == "실전 투자":
                         save_state_db(state_obj, market=market_code, strategy_name=strategy_alias) # strategy_name도 함께 저장
                     elif strategy_choice == "VR":
                         state_obj = VRState(**state_data)
-                        # VR의 경우 실시간 Pool 정보를 DB에 반영
-                        state_obj.pool = pool
                         save_state_db(state_obj, market=market_code, strategy_name=strategy_alias) # strategy_name도 함께 저장
 
                 # [개선] 거래 내역 동기화 쿨다운 적용 (60초)
