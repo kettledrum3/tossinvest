@@ -181,6 +181,7 @@ class CAConfig(BaseConfig):
     fee_rate: float = float(os.getenv("fee_rate", "0.0009")) # 미국 주식 수수료 0.09% 기본값
     trade_history_path: str = "data/trade_history.csv" # 거래 내역 경로
     detailed_trade_history_path: str = "data/detailed_trade_history.csv" # 상세 거래 내역 경로
+    intraday_drop_threshold: float = 0.05 # 기본 급락 기준 5%
 
     def __post_init__(self):
         # 한국 시장은 2배 레버리지가 주력이므로 기본 목표수익률을 7%로 조정
@@ -234,6 +235,8 @@ class CAState(BaseState):
     last_execution_price: float = 0.0 # 마지막 장중 체결가 (동적 기준점)
     current_price: float = 0.0        # [추가] 실시간 현재가 캐시
     last_check_date: str = ""         # 날짜 변경 감지용
+    intraday_drop_pending: bool = False # [ADD] 급락 감지 대기 플래그
+    intraday_drop_pending_time: float = 0.0 # [ADD] 급락 감지 대기 시작 시간 (타임아웃용)
     
     pending_cycle_transition: bool = False # [ADD] 차수 전환 대기 플래그
     day_start_turn: float = 0.0            # [ADD] 당일 시작 회차 고정값
@@ -410,6 +413,10 @@ class CostAveragingEngine:
                 state_data['total_profit'] = 0.0
             if 'unit_buy_amount' not in state_data:
                 state_data['unit_buy_amount'] = self.config.unit_buy_amount
+            if 'intraday_drop_pending' not in state_data:
+                state_data['intraday_drop_pending'] = False
+            if 'intraday_drop_pending_time' not in state_data:
+                state_data['intraday_drop_pending_time'] = 0.0
             if 'cumulative_buy_amount' in state_data:
                 del state_data['cumulative_buy_amount'] # 더 이상 엔진에서 관리하지 않음
             return CAState(**state_data)
@@ -619,6 +626,8 @@ class CostAveragingEngine:
                 self.state.last_intraday_level = 0
                 self.state.last_execution_price = 0.0
                 self.state.last_check_date = today_str
+                self.state.intraday_drop_pending = False
+                self.state.intraday_drop_pending_time = 0.0
                 if self.config.use_db:
                     save_state_db(self.state, market=self.state.market, strategy_name=self.state.strategy_name, only_if_exists=True)
                 else:
@@ -630,6 +639,18 @@ class CostAveragingEngine:
 
             if self.state.mode == "REVERSE":
                 return
+
+            # 급락 펜딩 플래그 감지 시 타임아웃(60초) 여부 확인
+            is_pending = getattr(self.state, 'intraday_drop_pending', False)
+            pending_time = getattr(self.state, 'intraday_drop_pending_time', 0.0)
+            if is_pending:
+                if time.time() - pending_time > 60:
+                    logger.warning(f"⚠️ [장중 급락 감시] {self.config.symbol} 펜딩 상태가 60초 초과되어 해제합니다.")
+                    self.state.intraday_drop_pending = False
+                    self.state.intraday_drop_pending_time = 0.0
+                else:
+                    # 아직 10초 대기 중이거나 처리 중이므로 스킵
+                    return
 
             if current_price is None:
                 current_price = self.broker.get_price(self.config.symbol)
@@ -658,9 +679,10 @@ class CostAveragingEngine:
         # [설정 확인] 일일 최대 한도 2T, 회당 매수 0.5T
         max_daily_buy = self.config.unit_buy_amount * 2.0 
         buy_amount = self.config.unit_buy_amount * 0.5
+        drop_threshold = getattr(self.config, 'intraday_drop_threshold', 0.05)
 
-        # [수정] 로그 폭증 방지: 기준점 대비 -3% 하락했더라도 일일 한도 초과 시 로직을 조기 종료하여 로그 비대화 방지
-        if trigger_drop_rate <= -0.03:
+        # [수정] 로그 폭증 방지: 기준점 대비 지정 비율 하락했더라도 일일 한도 초과 시 로직을 조기 종료하여 로그 비대화 방지
+        if trigger_drop_rate <= -drop_threshold:
             if self.state.daily_bought_amount + buy_amount > max_daily_buy:
                 # 이미 한도에 도달했다면 로깅 없이 즉시 반환
                 return
@@ -671,32 +693,81 @@ class CostAveragingEngine:
                 if self.config.market == "KR": return f"{int(v):,}"
                 return f"{v:,.2f}"
 
-            logger.info(f"🚨 [장중 급락 감지] {self.config.symbol} 현재가({cur_sym}{fmt(current_price)})가 기준가({cur_sym}{fmt(trigger_base)}) 대비 {trigger_drop_rate*100:.2f}% 하락")
+            logger.info(f"🚨 [장중 급락 감지] {self.config.symbol} 현재가({cur_sym}{fmt(current_price)})가 기준가({cur_sym}{fmt(trigger_base)}) 대비 {trigger_drop_rate*100:.2f}% 하락 (10초 후 시장가 매수 예정)")
             
-            # 지정가로 0.5T 분량 매수 (내부적으로 수량 계산)
-            if self._buy(buy_amount, current_price, "(장중) -3% 급락 매수", price_type="00"):
-                symbol_display = format_symbol_display(self.config.symbol, self.config.market)
-
-                # 장중 급락 매수 요약 정보 텔레그램 발송
-                notif_msg = (
-                    f"📉 <b>[장중 급락 매수 실행]</b> {symbol_display}\n"
-                    f"전일비 하락률: <b>{display_drop_rate*100:.2f}%</b>\n"
-                    f"계좌 평단가: <b>{cur_sym}{fmt(self.state.avg_price)}</b>\n"
-                    f"매수 단가: {cur_sym}{fmt(current_price)}\n"
-                    f"새 기준가: {cur_sym}{fmt(current_price)} (다음 -3% 감시)"
-                )
-                if trigger_base != effective_prev_close:
-                    notif_msg += f"\n기준점 대비 하락률: <b>{trigger_drop_rate*100:.2f}%</b> (기준가: {cur_sym}{fmt(trigger_base)})"
-                if self.config.use_db:
-                    send_telegram_message(notif_msg)
-
-                # [FIX] 중복 업데이트 제거 및 정확한 한도 차감
-                self.state.daily_bought_amount += buy_amount
-                self.state.last_execution_price = current_price # 체결가를 새로운 기준점으로 설정
+            # 바로 매수를 시도하지 않고, 급락 감지 flag 설정 및 기준점 업데이트 후 즉시 DB 저장
+            with _ca_intraday_lock:
+                self.state.intraday_drop_pending = True
+                self.state.intraday_drop_pending_time = time.time()
+                self.state.last_execution_price = current_price # 급락감지 기준을 업데이트
                 if self.config.use_db:
                     save_state_db(self.state, market=self.state.market, strategy_name=self.state.strategy_name, only_if_exists=True)
                 else:
                     save_state(self.state, self.config.save_path)
+            
+            # 10초 후 시장가(01) 매수 실행 예약
+            threading.Timer(
+                10.0, 
+                self._delayed_intraday_market_buy, 
+                args=(buy_amount, current_price, display_drop_rate, trigger_base, effective_prev_close)
+            ).start()
+
+    def _delayed_intraday_market_buy(self, buy_amount: float, trigger_price: float, display_drop_rate: float, trigger_base: float, effective_prev_close: float):
+        """급락 감지 10초 후 시장가(01) 매수를 실행하는 지연 메서드"""
+        try:
+            with _ca_intraday_lock:
+                # DB 모드인 경우 최신 상태를 먼저 로드하여 동기화
+                if self.config.use_db:
+                    state_data = load_state_db(self.config.symbol, self.config.strategy_type, market=self.config.market, strategy_name=self.config.strategy_name)
+                    if state_data:
+                        state_data.pop('updated_at', None)
+                        self.state = CAState(**state_data)
+                
+                # 펜딩 플래그 해제
+                self.state.intraday_drop_pending = False
+                self.state.intraday_drop_pending_time = 0.0
+
+                # 10초 후의 최신 가격 조회
+                latest_price = self.broker.get_price(self.config.symbol)
+                if latest_price <= 0:
+                    latest_price = trigger_price
+
+                drop_threshold = getattr(self.config, 'intraday_drop_threshold', 0.05)
+                desc_msg = f"(장중) -{drop_threshold*100:.0f}% 급락 시장가 매수"
+
+                # 시장가(01)로 0.5T 분량 매수 시도
+                if self._buy(buy_amount, latest_price, desc_msg, price_type="01"):
+                    symbol_display = format_symbol_display(self.config.symbol, self.config.market)
+                    cur_sym = "₩" if self.config.market == "KR" else "$"
+                    def fmt(v):
+                        if self.config.market == "KR": return f"{int(v):,}"
+                        return f"{v:,.2f}"
+
+                    # 장중 급락 매수 요약 정보 텔레그램 발송
+                    notif_msg = (
+                        f"📉 <b>[장중 급락 매수 실행]</b> {symbol_display}\n"
+                        f"전일비 하락률: <b>{display_drop_rate*100:.2f}%</b>\n"
+                        f"계좌 평단가: <b>{cur_sym}{fmt(self.state.avg_price)}</b>\n"
+                        f"매수 단가: {cur_sym}{fmt(latest_price)} (시장가)\n"
+                        f"새 기준가: {cur_sym}{fmt(trigger_price)} (다음 -{drop_threshold*100:.0f}% 감시)"
+                    )
+                    if trigger_base != effective_prev_close:
+                        notif_msg += f"\n기준점 대비 하락률: <b>{((trigger_price - trigger_base) / trigger_base)*100:.2f}%</b> (기준가: {cur_sym}{fmt(trigger_base)})"
+                    
+                    if self.config.use_db:
+                        send_telegram_message(notif_msg)
+
+                    # 상태 업데이트 및 저장
+                    self.state.daily_bought_amount += buy_amount
+                    self.state.last_execution_price = trigger_price
+                
+                # 상태 파일/DB 저장
+                if self.config.use_db:
+                    save_state_db(self.state, market=self.state.market, strategy_name=self.state.strategy_name, only_if_exists=True)
+                else:
+                    save_state(self.state, self.config.save_path)
+        except Exception as e:
+            logger.error(f"❌ [지연 장중 급락 매수 오류] {self.config.symbol}: {e}", exc_info=True)
 
     def run_cycle(self, date, check_existing_orders: bool = False, preview: bool = False, order_filter: Literal["LIMIT_ONLY", "LOC_ONLY", None] = None, transition_only: bool = False):
         """무한매수법 1회 사이클 실행 (일별 로직)"""

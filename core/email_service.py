@@ -99,7 +99,7 @@ def generate_daily_report_html(market):
         usd_diff = get_config("USDKRW_DIFF", "0.00")
         usd_pct = get_config("USDKRW_PCT", "0.00")
         html += f"<div style='background-color: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #3498db; margin: 25px 0;'>"
-        html += f"<span style='color: #2c3e50; font-weight: bold;'>💵 실시간 환율 정보:</span> 1$ = <b>₩{usd_krw}</b> <span style='font-size: 0.9em; color: #666;'>(전일대비 {float(usd_diff):+.2f}원, {float(usd_pct):+.2f}%)</span></div>"
+        html += f"<span style='color: #2c3e50; font-weight: bold;'>💵 실시간 환율 정보:</span> 1$ = <b>₩{float(usd_krw):,.2f}</b> <span style='font-size: 0.9em; color: #666;'>(전일대비 {float(usd_diff):+.2f}원, {float(usd_pct):+.2f}%)</span></div>"
 
     html += "<h3 style='color: #34495e; margin-top: 30px;'>💰 금일 실현 손익 내역</h3>"
     

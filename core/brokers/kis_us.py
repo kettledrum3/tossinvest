@@ -259,6 +259,11 @@ class KisUsBroker(Broker):
     def place_order(self, symbol: str, price: float, qty: float, order_type: Literal["BUY", "SELL"], price_type: str = "00", strategy: str = "MANUAL") -> bool:
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/order"
         tr_id = ("VTTT1002U" if order_type == "BUY" else "VTTT1006U") if self.is_simulation else ("TTTT1002U" if order_type == "BUY" else "TTTT1006U")
+        
+        # 시장가 주문(01)의 경우, 주문단가는 "0.00"으로 설정되어야 합니다.
+        if price_type == "01":
+            price = 0.0
+
         payload = {
             "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "OVRS_EXCG_CD": self._get_exchange(symbol),
             "PDNO": symbol, "ORD_QTY": str(int(qty)), "OVRS_ORD_UNPR": f"{price:.2f}", "ORD_SVR_DVSN_CD": "0", "ORD_DVSN": price_type

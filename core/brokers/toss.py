@@ -67,6 +67,15 @@ class TossBroker(Broker):
                     "Content-Type": "application/json"
                 }
                 res = requests.get(url, headers=headers, timeout=10)
+                
+                # 401 Unauthorized 시 토큰 강제 만료 처리 후 즉시 재발행 유도
+                if res.status_code == 401:
+                    logger.warning(f"⚠️ [Toss API] 계좌 조회 중 401 Unauthorized 감지. 토큰 만료 처리 후 재시도 ({attempt+1}/{max_retries})")
+                    from core.database import delete_api_token_db
+                    delete_api_token_db(self.account_no)
+                    time.sleep(1.0)
+                    continue
+
                 res.raise_for_status()
                 data = res.json()
                 
@@ -175,8 +184,10 @@ class TossBroker(Broker):
 
     def get_price(self, symbol: str) -> float:
         """현재가 조회 (GET /api/v1/prices)"""
+        if not symbol or not symbol.strip():
+            return 0.0
         try:
-            data = self._call_api("GET", "/api/v1/prices", params={"symbols": symbol})
+            data = self._call_api("GET", "/api/v1/prices", params={"symbols": symbol.strip().upper()})
             results = data.get("result", [])
             if results:
                 return float(results[0].get("lastPrice", 0.0))
@@ -186,6 +197,8 @@ class TossBroker(Broker):
 
     def get_previous_close(self, symbol: str) -> float:
         """전일 종가 조회 (GET /api/v1/candles, count=2)"""
+        if not symbol or not symbol.strip():
+            return 0.0
         try:
             data = self._call_api("GET", "/api/v1/candles", params={
                 "symbol": symbol,
@@ -207,6 +220,8 @@ class TossBroker(Broker):
 
     def get_last_5_day_avg_close(self, symbol: str) -> float:
         """직전 5거래일의 종가 평균 조회 (GET /api/v1/candles, count=6)"""
+        if not symbol or not symbol.strip():
+            return 0.0
         try:
             data = self._call_api("GET", "/api/v1/candles", params={
                 "symbol": symbol,
@@ -239,6 +254,8 @@ class TossBroker(Broker):
 
     def get_current_high(self, symbol: str) -> float:
         """당일 고가 조회 (GET /api/v1/candles, count=1)"""
+        if not symbol or not symbol.strip():
+            return 0.0
         try:
             data = self._call_api("GET", "/api/v1/candles", params={
                 "symbol": symbol,
@@ -255,6 +272,8 @@ class TossBroker(Broker):
 
     def get_current_low(self, symbol: str) -> float:
         """당일 저가 조회 (GET /api/v1/candles, count=1)"""
+        if not symbol or not symbol.strip():
+            return 0.0
         try:
             data = self._call_api("GET", "/api/v1/candles", params={
                 "symbol": symbol,
@@ -271,8 +290,10 @@ class TossBroker(Broker):
 
     def _get_account_equity_impl(self, symbol: str) -> Tuple[float, float, float]:
         """보유 주식 잔고 정보 조회 (GET /api/v1/holdings) -> (shares, avg_price, eval_amt)"""
+        if not symbol or not symbol.strip():
+            return 0.0, 0.0, 0.0
         try:
-            data = self._call_api("GET", "/api/v1/holdings", params={"symbol": symbol})
+            data = self._call_api("GET", "/api/v1/holdings", params={"symbol": symbol.strip().upper()})
             overview = data.get("result", {})
             items = overview.get("items", [])
             for item in items:
@@ -336,6 +357,8 @@ class TossBroker(Broker):
 
     def place_order(self, symbol: str, price: float, qty: float, order_type: Literal["BUY", "SELL"], price_type: str = "00", strategy: str = "MANUAL") -> bool:
         """주문 발송 (POST /api/v1/orders)"""
+        if not symbol or not symbol.strip():
+            return False
         path = "/api/v1/orders"
         
         # 중복 주문 방지용 고유 clientOrderId 생성
@@ -408,8 +431,10 @@ class TossBroker(Broker):
 
     def fetch_open_orders(self, symbol: str) -> List[dict]:
         """미체결 주문 조회 (GET /api/v1/orders?status=OPEN) -> KIS 호환 딕셔너리로 어댑팅"""
+        if not symbol or not symbol.strip():
+            return []
         try:
-            data = self._call_api("GET", "/api/v1/orders", params={"status": "OPEN", "symbol": symbol})
+            data = self._call_api("GET", "/api/v1/orders", params={"status": "OPEN", "symbol": symbol.strip().upper()})
             orders = data.get("result", {}).get("orders", [])
             
             adapted_orders = []
@@ -452,6 +477,8 @@ class TossBroker(Broker):
         """
         체결 이력 동기화 (로컬 DB의 미체결 주문번호들을 순회하며 개별 주문 API를 호출하여 상태를 확인 및 KIS 스타일로 변환)
         """
+        if not symbol or not symbol.strip():
+            return []
         adapted_executions = []
         try:
             # 1. 로컬 DB에서 'order_history'의 status='SUCCESS'인 주문번호들을 조회
@@ -543,8 +570,10 @@ class TossBroker(Broker):
 
     def get_stock_info(self, symbol: str) -> Optional[dict]:
         """종목 기본 정보 조회 (GET /api/v1/stocks) -> KIS 호환 딕셔너리로 변환"""
+        if not symbol or not symbol.strip():
+            return None
         try:
-            data = self._call_api("GET", "/api/v1/stocks", params={"symbols": symbol})
+            data = self._call_api("GET", "/api/v1/stocks", params={"symbols": symbol.strip().upper()})
             results = data.get("result", [])
             if results:
                 info = results[0]
