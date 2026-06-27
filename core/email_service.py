@@ -66,10 +66,21 @@ def generate_daily_report_html(market):
     states = get_all_states_db(market=market)
     currency = "₩" if market == "KR" else "$"
     
+    # 실제 계좌 예수금 조회
+    from core.brokers.toss import TossBroker
+    broker = TossBroker(market=market)
+    cash_pool = broker.get_cash_pool()
+    cash_pool_fmt = f"{int(cash_pool):,}" if market == "KR" else f"{cash_pool:,.2f}"
+    
     html = f"""
     <html>
     <body style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #333; line-height: 1.6; padding: 20px; max-width: 800px; margin: auto; background-color: #ffffff;">
         <h2 style="color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; margin-top: 0;">🚀 {market} 시장 일일 운용 보고서 ({today_str})</h2>
+        
+        <div style="background-color: #ebf5fb; padding: 15px; border-radius: 10px; border-left: 5px solid #2980b9; margin-bottom: 25px;">
+            <span style="color: #2c3e50; font-weight: bold; font-size: 1.1em;">🏦 실제 계좌 예수금:</span> 
+            <span style="font-size: 1.2em; color: #2980b9; font-weight: bold;">{currency}{cash_pool_fmt}</span>
+        </div>
         
         <h3 style="color: #34495e; margin-top: 30px; margin-bottom: 15px;">📊 전략별 현재 상태</h3>
         <table style="border-collapse: collapse; width: 100%; text-align: left; border: 1px solid #e9ecef; border-radius: 8px; overflow: hidden; margin-bottom: 25px;">

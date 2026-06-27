@@ -303,7 +303,7 @@ def job_market_prepare(market: str = "US"):
     except Exception as e:
         logger.error(f"[{market}] Job Market Prepare Failed: {e}")
 
-def job_update_exchange_rate(broker=None, force=False):
+def job_update_exchange_rate(broker=None, force=False, is_market_close=False):
     """Toss API를 사용하여 달러 환율을 조회하고 DB에 저장"""
     try:
         # 당일 이미 업데이트했다면 건너뜁니다 (force=True인 경우 제외)
@@ -327,18 +327,39 @@ def job_update_exchange_rate(broker=None, force=False):
         
         if rate_val:
             rate = float(rate_val)
+            
+            # DB config의 USDKRW_BASE_RATE(전일 마감 환율)와 비교하여 변동폭(diff) 및 등락률(pct)을 직접 수동 계산해 기록
+            base_rate_str = get_config("USDKRW_BASE_RATE", "")
+            if not base_rate_str:
+                # 만약 기준 환율이 없으면 현재 환율을 기준으로 삼음
+                base_rate = rate
+                set_config("USDKRW_BASE_RATE", f"{base_rate:.2f}")
+            else:
+                base_rate = float(base_rate_str)
+                
+            diff = rate - base_rate
+            pct = (diff / base_rate) * 100 if base_rate > 0 else 0.0
+            
             set_config("USDKRW", f"{rate:.2f}")
+            set_config("USDKRW_DIFF", f"{diff:+.2f}")
+            set_config("USDKRW_PCT", f"{pct:+.2f}")
+            
             # 업데이트 날짜 및 시간(KST) 저장
             set_config("USDKRW_UPDATE_DATE", today_str)
             set_config("USDKRW_UPDATE_TIME", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             
-            # bp 값을 가져와서 diff 계산
-            bp = float(res_obj.get("basisPoint", 0))
-            diff = (bp / 10000.0) * rate  # 변동 금액 추정
-            set_config("USDKRW_DIFF", f"{diff:+.2f}")
-            set_config("USDKRW_PCT", "0.00")
-            logger.info(f"💵 [ExchangeRate] TOSS API 환율 업데이트 완료: 1$ = ₩{rate:,.2f}")
-            send_telegram_message(f"💵 <b>[환율 업데이트 완료]</b>\n시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n현재 환율: 1$ = <b>₩{rate:,.2f}</b>")
+            # 장 마감 직후(16:05 ET) 업데이트 완료 시에만 오늘 환율을 새로운 USDKRW_BASE_RATE로 저장
+            if is_market_close:
+                set_config("USDKRW_BASE_RATE", f"{rate:.2f}")
+                logger.info(f"💵 [ExchangeRate] 장 마감 환율 업데이트 완료. 새로운 기준 환율 USDKRW_BASE_RATE = {rate:.2f}")
+            
+            logger.info(f"💵 [ExchangeRate] TOSS API 환율 업데이트 완료: 1$ = ₩{rate:,.2f} (전일대비 {diff:+.2f}원, {pct:+.2f}%)")
+            send_telegram_message(
+                f"💵 <b>[환율 업데이트 완료]</b>\n"
+                f"시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"현재 환율: 1$ = <b>₩{rate:,.2f}</b>\n"
+                f"전일대비: <b>{diff:+.2f}원 ({pct:+.2f}%)</b>"
+            )
         else:
             logger.warning("⚠️ [ExchangeRate] TOSS 환율 응답 데이터가 올바르지 않습니다.")
     except Exception as e:
@@ -480,6 +501,10 @@ def job_hourly_market_sync(market: str):
     load_market_env(market)
     broker = TossBroker(market=market)
     
+    total_new = 0
+    total_update = 0
+    synced_details = []
+    
     try:
         # 최근 1일(어제 및 오늘) 데이터 동기화
         start_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
@@ -489,12 +514,30 @@ def job_hourly_market_sync(market: str):
             symbol = st['symbol']
             # 1. 체결 내역(Execution) 동기화 (REST API)
             execs = broker.fetch_execution_history(symbol, start_date, end_date)
-            sync_trade_history_db(symbol, execs, strategy=st.get('strategy_type'), market=market, strategy_name=st.get('strategy_name'), silent=True)
+            new_c, upd_c = sync_trade_history_db(symbol, execs, strategy=st.get('strategy_type'), market=market, strategy_name=st.get('strategy_name'), silent=True)
+            
+            total_new += new_c
+            total_update += upd_c
+            if new_c > 0 or upd_c > 0:
+                synced_details.append(f"- {symbol} ({st.get('strategy_name', 'N/A')}): 신규 {new_c}건, 업데이트 {upd_c}건")
+                
             # 2. 미체결/취소 주문(Open Orders) 동기화
             open_orders = broker.fetch_open_orders(symbol)
             sync_open_orders_db(symbol, open_orders)
             
-        logger.info(f"✅ [{market}] 장중 정기 동기화 완료.")
+        logger.info(f"✅ [{market}] 장중 정기 동기화 완료. (신규: {total_new}건, 업데이트: {total_update}건)")
+        
+        if total_new > 0 or total_update > 0:
+            details_str = "\n".join(synced_details)
+            msg = (
+                f"🔄 <b>[{market} 정기 동기화 완료]</b>\n"
+                f"체결 내역 동기화 성공 요약:\n"
+                f"• 신규 복구: <b>{total_new}건</b>\n"
+                f"• 업데이트: <b>{total_update}건</b>\n\n"
+                f"<b>[상세 내역]</b>\n{details_str}"
+            )
+            send_telegram_message(msg)
+            
     except Exception as e:
         logger.error(f"[{market}] 장중 정기 동기화 중 오류 발생: {e}")
 
@@ -762,12 +805,20 @@ def main():
         name='Heartbeat'
     )
 
-    # 환율 정보 업데이트 (매일 한국시간 20:00 - 미국 프리마켓 주문 제출 전)
+    # 환율 정보 업데이트 1: 미국 장전 환율 (Daily 07:30 ET)
     scheduler.add_job(
-        job_update_exchange_rate,
-        trigger=CronTrigger(hour=20, minute=0, timezone=kr_tz),
-        id='periodic_exchange_rate',
-        name='Exchange Rate Update (Daily 20:00 KST)'
+        lambda: job_update_exchange_rate(force=True, is_market_close=False),
+        trigger=CronTrigger(hour=7, minute=30, day_of_week='mon-fri', timezone=ny_tz),
+        id='us_pre_market_exchange_rate',
+        name='US Pre-Market Exchange Rate Update (07:30 ET)'
+    )
+
+    # 환율 정보 업데이트 2: 미국 장마감 환율 및 기준가 보존 (Daily 16:05 ET)
+    scheduler.add_job(
+        lambda: job_update_exchange_rate(force=True, is_market_close=True),
+        trigger=CronTrigger(hour=16, minute=5, day_of_week='mon-fri', timezone=ny_tz),
+        id='us_post_market_exchange_rate',
+        name='US Post-Market Exchange Rate Update (16:05 ET)'
     )
 
     # 4. DB 일일 백업 (매일 05:10 KST)

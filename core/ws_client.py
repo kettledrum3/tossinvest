@@ -293,7 +293,8 @@ class KisWebSocketClient:
         try:
             while self.running:
                 await asyncio.sleep(120)  # 2분 간격
-                if websocket.open:
+                is_open = websocket.open if hasattr(websocket, 'open') else not websocket.closed
+                if is_open:
                     ping_msg = {
                         "header": {
                             "tr_id": "PINGPONG",
@@ -725,7 +726,6 @@ class KisWebSocketClient:
                             ca_state.total_shares = new_shares
                             ca_state.avg_price = new_avg
                             ca_state.last_execution_price = price # 장중 매수 기준점 업데이트
-                            ca_state.pool = current_pool - trade_amt # [추가] 예수금 차감
                             
                             unit_buy = float(ca_state.unit_buy_amount)
                             if unit_buy > 0:
@@ -735,7 +735,6 @@ class KisWebSocketClient:
                         elif order_type == "SELL":
                             new_shares = max(0, current_shares - qty)
                             ca_state.total_shares = new_shares
-                            ca_state.pool = current_pool + trade_amt # [추가] 예수금 합산
                             
                             if new_shares == 0:
                                 # [수정] 장중 전량 매도 시 즉시 초기화하지 않고 다음 날 차수 전환을 위해 플래그 설정

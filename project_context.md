@@ -161,9 +161,40 @@
 - **자가 치유형 펜딩 플래그**: 프로세스 비정상 종료 등으로 인해 플래그가 펜딩 상태로 고정되는 것을 방지하기 위해 60초 초과 시 자동으로 해제되도록 안전 장치를 적용했습니다.
 - **급락 기준 변경 (3% -> 5%)**: 한국 시장 및 미국 시장 모두 급락 대응 기준 비율을 기존 3%에서 **5%**(`intraday_drop_threshold=0.05`)로 상향 조정하고 동적 구성이 가능하도록 `CAConfig`에 필드를 추가했습니다.
 
-### 9.2. 시장별 시장가 주문 처리 보완
-- **한국 시장 (`KisKrBroker`)**: 시장가 주문(`01`) 시 주문 가격을 `0`으로 변환하여 제출하도록 보완했습니다.
-- **미국 시장 (`KisUsBroker`)**: 시장가 주문(`01`) 시 주문 가격을 `0.0`으로 변환하여 `OVRS_ORD_UNPR`을 `"0.00"`으로 전달하도록 보완했습니다.
-- **토스증권 브로커 (`TossBroker`)**: 토스증권 API는 시장가 주문(`orderType="MARKET"`) 시 `price` 파라미터를 페이로드에서 자동으로 누락시키는 기능이 브로커 자체에 구현되어 있으므로 별도 수정 없이 동작함을 확인했습니다.
+### 9.2. 시장별 시장가 주문 처리 보완:
+  - **한국 시장 (`KisKrBroker`)**: 시장가 주문(`01`) 시 주문 가격을 `0`으로 변환하여 제출하도록 보완했습니다.
+  - **미국 시장 (`KisUsBroker`)**: 시장가 주문(`01`) 시 주문 가격을 `0.0`으로 변환하여 `OVRS_ORD_UNPR`을 `"0.00"`으로 전달하도록 보완했습니다.
+  - **토스증권 브로커 (`TossBroker`)**: 토스증권 API는 시장가 주문(`orderType="MARKET"`) 시 `price` 파라미터를 페이로드에서 자동으로 누락시키는 기능이 브로커 자체에 구현되어 있으므로 별도 수정 없이 동작함을 확인했습니다.
 
 
+---
+
+## 10. KIS CAVR 개선사항 마이그레이션 및 Toss API 트래픽/데이터 안정성 보완 [2026년 6월 27일 토요일]
+
+### 10.1. 정기 동기화 요약 알림 및 반환 규격 통일
+- **동기화 건수 반환**: [database.py](file:///d:/Python_D/tossinvest/core/database.py) 내 `sync_trade_history_db` 함수가 신규 체결 건수(`new_count`)와 업데이트 건수(`update_count`)를 튜플 `(new_count, update_count)`로 반환하도록 구조를 개선했습니다.
+- **텔레그램 요약 알림**: [scheduler.py](file:///d:/Python_D/tossinvest/core/scheduler.py) 내 매시 45분 장중 정기 동기화(`job_hourly_market_sync`) 성공 시, 신규 복구/업데이트 건수가 1건 이상일 때 요약 건수 및 세부 종목 정보를 담아 텔레그램 메시지로 자동 발송하도록 보완했습니다.
+
+### 10.2. 일일 보고서 실제 계좌 예수금 노출
+- **예수금 조회 연동**: [email_service.py](file:///d:/Python_D/tossinvest/core/email_service.py) 내 `generate_daily_report_html` 일일 운용 보고서 생성 시, `TossBroker`를 통해 장 마감 시점의 실제 출금 가능한 계좌 예수금(`get_cash_pool()`)을 실시간 조회하여 이메일 본문 상단에 시각적 블록(`🏦 실제 계좌 예수금`)으로 표시하도록 개선했습니다.
+
+### 10.3. 전략 할당 예수금(pool) 격리 및 강제 덮어쓰기 방지
+- **VR 엔진 pool 보호**: [cavr.py](file:///d:/Python_D/tossinvest/core/cavr.py) 내 `ValueRebalancingEngine`의 `run_cycle` 프로세스 중 실전 투자 시(`self.config.use_db=True`) 개별 전략의 가상 할당 자금(`self.state.pool`)을 실제 계좌 예수금으로 강제 덮어쓰던 로직을 방지하여 격리된 예산 한도가 보존되도록 했습니다 (백테스트 시에만 덮어씀).
+- **CA V4.0 유동 매수금 공식 보정**: `CostAveragingEngine` 내 V4.0 유동 매수금 계산 시 분자 인자를 고정된 `self.state.pool` 대신, 보유 주식 투입액을 차감한 실제 가용 잔액 `s_pool = self.state.pool - (shares * avg_price)`으로 대체하여 잔고 소진 비율에 따라 매일 동적으로 정상 갱신되도록 수식을 보완했습니다.
+
+### 10.4. 미국 정규장 시간 기준 하루 2회 환율 갱신 및 기준점 보존
+- **크론잡 이원화**: [scheduler.py](file:///d:/Python_D/tossinvest/core/scheduler.py) 내 환율 갱신 작업을 뉴욕 시간대(`ny_tz`) 기준 **07:30 ET(장전 2시간)** 및 **16:05 ET(장후 마감 직후)** 두 개의 CronJob으로 분리하여 서머타임 변동에 자동 대응하도록 개편했습니다.
+- **변동폭 수동 계산 및 기준 환율 저장**: 불안정한 외부 환율 API 연동 대신 토스 공식 환율 API(`GET /api/v1/exchange-rate`)를 사용하되, 갱신 시 DB config의 `USDKRW_BASE_RATE`와 비교하여 변동폭(`diff`) 및 등락률(`pct`)을 직접 수동 계산하여 `USDKRW_DIFF`, `USDKRW_PCT`로 저장합니다. 16:05 ET(장 마감 후) 업데이트 완료 시에만 오늘 환율을 새로운 `USDKRW_BASE_RATE`로 저장하여 전일 정규장 마감 시점의 환율이 항상 정확한 전일대비 기준점으로 보존되도록 구현했습니다.
+
+### 10.5. 대시보드 실시간 가용 자금 표기 및 API 캐싱
+- **가용 예수금 실시간 계산**: [dashboard.py](file:///d:/Python_D/tossinvest/dashboard.py) 내 `💰 전략 할당 예수금`에 기존 고정 설정금 대신 실시간 가용 예수금인 `s_pool = pool - (shares * avg_price)`을 표기하도록 수정했습니다.
+- **예수금 캐싱 및 트래픽 완화**: 대시보드의 5초 주기 프래그먼트 자동 갱신(`display_holdings_metrics_live`) 시 매번 `broker.get_cash_pool()` API를 호출하는 대신, 수동 계좌조회 버튼 클릭 시 `st.session_state`에 캐싱된 계좌 예수금을 매핑하여 403 API 트래픽 제한 위험을 해소했습니다. 환율 메트릭 위젯에는 수동 계산된 전일대비 변동폭 및 등락률(delta)을 연동 표기했습니다.
+
+### 10.6. 웹소켓 및 Docker 환경 안정성 보완
+- **AttributeError 방지**: [ws_client.py](file:///d:/Python_D/tossinvest/core/ws_client.py) 내 `_ping_loop` 시 websockets 라이브러리 버전별 `ClientConnection` 개체의 open 속성 유무에 대응해 `hasattr` 체크를 통한 안전한 연결 감지 방식을 적용했습니다.
+- **CA 전략 예수금 격리**: 웹소켓 실시간 체결 처리 시 `ca_state.pool`을 강제로 가산/감산하던 코드를 제거하여 설정 예수금 한도가 훼손되지 않도록 영구 보존했습니다.
+- **Dockerfile 빌드 안정화**: [dockerfile](file:///d:/Python_D/tossinvest/dockerfile) 내에서 PyPI 패키지 다운로드 중 네트워크 타임아웃 및 해시 불일치 에러를 방지하기 위해 `pip`를 최신으로 선제 업그레이드하고 `--default-timeout=1000`, `--retries 10` 옵션을 추가했습니다.
+
+### 10.7. ToosInvest 브랜드 테마 및 UI 커스터마이징
+- **짙은 푸른색 테마 적용**: [.streamlit/config.toml](file:///d:/Python_D/tossinvest/.streamlit/config.toml) 테마 설정 파일을 신규 생성하여 대시보드 Key Color(primaryColor)를 짙은 푸른색 `#004B87`로 설정하고 위젯 배경 등을 연한 푸른빛 계열로 단장하여 KIS CAVR 프로젝트와 시각적으로 명확히 분리했습니다. [dashboard.py](file:///d:/Python_D/tossinvest/dashboard.py) 상단에도 커스텀 CSS 마크다운을 주입하여 스타일을 한층 보강했습니다.
+- **로고 및 제목 브랜딩**: 사용자가 보관 중이던 `toss_logo.png` 로고 이미지 파일을 대시보드 메인 화면 타이틀, 사이드바 최상단, 로그인 화면에 삽입하였으며, 대시보드 메인 제목 및 사이드바 타이틀에 "ToosInvest" 식별 문구를 추가하여 브랜딩을 강화했습니다.

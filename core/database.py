@@ -1147,9 +1147,11 @@ def sync_trade_history_db(symbol, executions, strategy=None, market="US", strate
                 logger.info(f"✅ [DB_SYNC] {symbol}: {new_count}건 복구, {update_count}건 업데이트 완료 (Alias: {target_alias})")
             else:
                 logger.debug(f"🔄 [DB_SYNC] {symbol}: 추가할 새로운 내역이 없습니다.")
+        return new_count, update_count
 
     except Exception as e:
         logger.error(f"Failed to sync trade history for {symbol}: {e}")
+        return 0, 0
 
 def migrate_sync_trades_db(symbol, target_strategy):
     """'SYNC'로 표시된 거래 내역을 특정 전략으로 변경"""

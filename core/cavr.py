@@ -781,8 +781,11 @@ class CostAveragingEngine:
             available_slots = self.config.a_default - self.state.current_turn
             if available_slots > 0:
                 # [중요] 1회 매수금을 매일 재계산하여 유동성 부여
-                self.config.unit_buy_amount = self.state.pool / available_slots
-                logger.info(f"📍 [V4.0] 유동 매수액 재계산: {self.config.unit_buy_amount:,.2f} (남은회차: {available_slots:.2f})")
+                shares = float(self.state.total_shares)
+                avg_price = float(self.state.avg_price)
+                s_pool = self.state.pool - (shares * avg_price)
+                self.config.unit_buy_amount = s_pool / available_slots
+                logger.info(f"📍 [V4.0] 유동 매수액 재계산: {self.config.unit_buy_amount:,.2f} (가용잔액 s_pool: {s_pool:,.2f}, 남은회차: {available_slots:.2f})")
             if self.state.current_turn > (self.config.a_default - 1):
                 if self.state.mode != "REVERSE" and not preview:
                     send_telegram_message(f"🚨 <b>[CA V4.0 리버스 모드 가동]</b> {format_symbol_display(self.config.symbol, self.config.market)}\n예산 소진(T > {self.config.a_default - 1})에 따라 리버스 모드로 전환합니다.")
@@ -1451,7 +1454,8 @@ class ValueRebalancingEngine:
         current_price = self.broker.get_price(self.config.symbol)
         if current_price <= 0:
             logger.warning(f"[{self.config.symbol}] 현재가 조회 실패 또는 0 이하의 가격({current_price}). 이번 사이클 매수/매도 로직을 건너뜁니다.")
-            self.state.pool = self.broker.get_cash_pool() # Pool은 업데이트
+            if not self.config.use_db:
+                self.state.pool = self.broker.get_cash_pool() # Pool은 업데이트
             self._save_state() # 상태 저장 후 종료
             return
         day_high = self.broker.get_current_high(symbol=self.config.symbol)
@@ -1561,7 +1565,8 @@ class ValueRebalancingEngine:
                     break
 
         # 최종 상태 업데이트
-        self.state.pool = self.broker.get_cash_pool()
+        if not self.config.use_db:
+            self.state.pool = self.broker.get_cash_pool()
 
         self._save_state()
         logger.info("--- 밸류리밸런싱(VR) 사이클 종료 ---")

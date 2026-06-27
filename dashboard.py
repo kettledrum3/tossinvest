@@ -1,6 +1,17 @@
 import streamlit as st
 import sqlite3
-st.set_page_config(page_title="cavr Dashboard", layout="wide")
+st.set_page_config(page_title="ToosInvest CAVR Dashboard", layout="wide")
+
+# Custom CSS to override base colors and button theme
+st.markdown("""
+<style>
+    .stButton>button[kind="primary"] {
+        background-color: #004B87 !important;
+        border-color: #004B87 !important;
+        color: white !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 import pandas as pd
 import os
@@ -152,7 +163,12 @@ ORDER_TYPE_MAP = {
 st.session_state.auth_trace.append(f"Auth Check: auth={st.session_state.authenticated}, temp={st.session_state.temp_pass_mode}")
 
 if not st.session_state.authenticated:
-    st.title("🔐 CAVR 시스템 로그인")
+    col_l1, col_l2 = st.columns([1, 8])
+    with col_l1:
+        if os.path.exists("toss_logo.png"):
+            st.image("toss_logo.png", width=60)
+    with col_l2:
+        st.title("🔐 ToosInvest CAVR 로그인")
     auth_mode = st.radio("모드 선택", ["로그인", "회원가입"], horizontal=True)
     
     with st.container(border=True):
@@ -497,7 +513,9 @@ def display_sidebar_summary(m_display, m_code):
             st.sidebar.error(f"Error loading state: {e}")
 
 with st.sidebar:
-    st.title("🚀 CAVR 컨트롤 패널")
+    if os.path.exists("toss_logo.png"):
+        st.image("toss_logo.png", width=120)
+    st.title("🚀 ToosInvest CAVR 컨트롤 패널")
     active_market_display = st.selectbox("활성 시장 선택 (운영 대상)", ["미국 시장", "한국 시장"], key="market_selector")
     active_market_code = "US" if active_market_display == "미국 시장" else "KR"
     
@@ -878,7 +896,12 @@ with st.sidebar:
 if st.sidebar.button("🔓 로그아웃"):
     handle_logout()
 
-st.title(f"🚀 {mode} - {strategy_choice} 전략")
+col_title1, col_title2 = st.columns([1, 10])
+with col_title1:
+    if os.path.exists("toss_logo.png"):
+        st.image("toss_logo.png", width=65)
+with col_title2:
+    st.title(f"🚀 ToosInvest {mode} - {strategy_choice} 전략")
 
 # --- 시장별 현황 탭 --- (사이드바 선택에 따라 강조 및 필터링)
 # [수정] 활성 시장에 따라 탭 순서를 동적으로 변경하여 첫 번째 탭이 항상 활성 시장을 가리키도록 함
@@ -1404,14 +1427,20 @@ def display_realtime_header():
                 
                 if market_code == "US":
                     usd_krw = float(get_config("USDKRW", "0.00"))
+                    usd_krw_diff = float(get_config("USDKRW_DIFF", "0.00"))
+                    usd_krw_pct = float(get_config("USDKRW_PCT", "0.00"))
+                    fx_delta_val = f"{usd_krw_diff:+.2f} ({usd_krw_pct:+.2f}%)"
+                    
                     fx_time = get_config("USDKRW_UPDATE_TIME", "N/A")
                     col1, col2, col3, col4 = st.columns([1.5, 1.5, 1, 2])
                     col1.metric(label=f"현재가 ({format_ticker_display(symbol, market_code)})", value=f"{currency_symbol}{format_currency(price, market_code)}", delta=delta_val)
-                    col2.metric(label="현재 환율 (USD/KRW)", value=f"₩{usd_krw:,.2f}")
+                    col2.metric(label="현재 환율 (USD/KRW)", value=f"₩{usd_krw:,.2f}", delta=fx_delta_val)
                     with col2:
                         st.caption(f"업데이트: {fx_time}")
                         if st.button("🔄 지금 환율 조회", key="manual_fx_update", help="환율 정보를 즉시 갱신합니다."):
                             job_update_exchange_rate(broker=ActiveBroker, force=True)
+                            if f"broker_cash_cache_{market_code}" in st.session_state:
+                                del st.session_state[f"broker_cash_cache_{market_code}"]
                             st.rerun()
                     col3.write("") # 간격
                     col4.caption(f"⏱️ [{market_code}] 실시간 자동 갱신 중 (10초) | {datetime.now().strftime('%H:%M:%S')}")
@@ -1440,6 +1469,7 @@ if mode == "실전 투자":
                 
                 # 정보 조회
                 pool = broker.get_cash_pool()
+                st.session_state[f"broker_cash_cache_{market_code}"] = pool
                 shares, avg_price, eval_amt = broker.get_account_equity(symbol, strategy_name=strategy_alias)
                 current_price = broker.get_price(symbol)
                 prev_close = broker.get_previous_close(symbol)
@@ -1523,16 +1553,24 @@ if mode == "실전 투자":
             broker = ActiveBroker
             curr_price = broker.get_price(symbol)
             prev_close = broker.get_previous_close(symbol)
-            broker_cash = broker.get_cash_pool()
+            
+            # 매번 API 호출하지 않고 캐시된 예수금 사용 (트래픽 경감)
+            broker_cash = st.session_state.get(f"broker_cash_cache_{market_code}", None)
+            if broker_cash is None:
+                broker_cash = broker.get_cash_pool()
+                st.session_state[f"broker_cash_cache_{market_code}"] = broker_cash
         else:
             curr_price = state.get('current_price', 0)
-            prev_close = curr_price # 정확한 전일종가 조회가 어려우므로 현재가로 대체 표시
+            prev_close = curr_price
             broker_cash = state.get('pool', 0)
 
         # 수치 추출 (DB 기반 - 웹소켓 클라이언트가 업데이트한 값)
         pool = state.get('pool', 0.0)
         shares = state.get('total_shares', 0.0)
         avg_price = state.get('avg_price', 0.0)
+        
+        # 실시간 가용 예수금 s_pool = pool - (shares * avg_price)
+        s_pool = pool - (shares * avg_price)
         
         # 실시간 평가액 및 수익 계산
         eval_amt = shares * curr_price
@@ -1546,7 +1584,7 @@ if mode == "실전 투자":
 
         st.divider()
         col_p1, col_p2 = st.columns(2)
-        col_p1.metric(label=f"💰 전략 할당 예수금 ({currency_symbol})", value=f"{currency_symbol}{format_currency(pool, market_code)}", help="DB에 저장된 이 전략 전용 예수금입니다.")
+        col_p1.metric(label=f"💰 전략 할당 예수금 ({currency_symbol})", value=f"{currency_symbol}{format_currency(s_pool, market_code)}", help="DB의 설정 예수금에서 현재 주식 투입액을 차감한 실시간 가용 예수금입니다.")
         col_p2.metric(label=f"🏦 거래소 총 예수금 ({currency_symbol})", value=f"{currency_symbol}{format_currency(broker_cash, market_code)}", help="증권사 계좌의 실제 출금 가능 원금입니다.")
 
         st.subheader(f"보유 종목 현황: {format_ticker_display(symbol, market_code)}")
