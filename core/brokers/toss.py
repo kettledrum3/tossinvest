@@ -421,7 +421,7 @@ class TossBroker(Broker):
                     f"구분: {'매수' if order_type == 'BUY' else '매도'} ({tif})\n"
                     f"수량: {int(qty)}주\n"
                     f"가격: {cur_sym}{price_fmt}\n"
-                    f"주문 ID: <code>{order_id}</code>"
+                    f"주문 ID: <code>...{order_id[-10:] if order_id and len(order_id) > 10 else order_id}</code>"
                 )
                 return True
         except Exception as e:

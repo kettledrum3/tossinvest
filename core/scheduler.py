@@ -165,10 +165,10 @@ def run_ca_strategies(market: str = "US", check_existing: bool = False, force: b
 
         logger.info(f"==> [{market}] '{symbol}' ({alias}) CA 전략 처리 시작...")
         
-        cash = broker.get_cash_pool()
+        cash = state_data.get('pool', 0.0)
         unit_buy = state_data.get('unit_buy_amount', 0)
         if cash < unit_buy and unit_buy > 0:
-            send_telegram_message(f"⚠️ <b>[잔고 부족]</b> {symbol} 매수 필요금(${unit_buy:.2f})보다 예수금(${cash:.2f})이 적습니다. 매도 주문 위주로 진행됩니다.")
+            send_telegram_message(f"⚠️ <b>[잔고 부족]</b> {symbol} 매수 필요금(${unit_buy:.2f})보다 전략 가상 예수금(${cash:.2f})이 적습니다. 매도 주문 위주로 진행됩니다.")
 
         try:
             config = CAConfig(symbol=symbol, use_db=True, market=market, strategy_name=alias)
@@ -230,8 +230,9 @@ def run_vr_strategies(market: str = "US", check_existing: bool = False, force: b
 
         logger.info(f"==> [{market}] '{symbol}' ({alias}) VR 전략 처리 시작...")
 
-        if broker.get_cash_pool() < 50: # 최소 안전 마진
-             send_telegram_message(f"⚠️ <b>[잔고 부족]</b> {symbol} VR 매수를 위한 예수금이 부족합니다. 매도 주문만 시도합니다.")
+        cash = state_data.get('pool', 0.0)
+        if cash < 50: # 최소 안전 마진
+             send_telegram_message(f"⚠️ <b>[잔고 부족]</b> {symbol} VR 매수를 위한 전략 가상 예수금(${cash:.2f})이 부족합니다. 매도 주문만 시도합니다.")
 
         try:
             config = VRConfig(symbol=symbol, use_db=True, market=market, strategy_name=alias, investment_type="accumulation")

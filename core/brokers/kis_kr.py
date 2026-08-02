@@ -345,7 +345,7 @@ class KisKrBroker(Broker):
                 f"구분: {'매수' if order_type == 'BUY' else '매도'}\n"
                 f"수량: {int(qty)}주\n"
                 f"가격: ₩{int(adjusted_price):,}\n"
-                f"주문번호: <code>{odno}</code>"
+                f"주문번호: <code>...{odno[-10:] if odno and len(odno) > 10 else odno}</code>"
             )
             return True
             

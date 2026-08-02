@@ -1,6 +1,6 @@
 import streamlit as st
 import sqlite3
-st.set_page_config(page_title="ToosInvest CAVR Dashboard", layout="wide")
+st.set_page_config(page_title="TossInvest CAVR Dashboard", layout="wide")
 
 # Custom CSS to override base colors and button theme
 st.markdown("""
@@ -142,7 +142,6 @@ if st.session_state.authenticated:
 # --- 모듈 임포트 (상단으로 이동) ---
 from dotenv import load_dotenv, set_key
 from core.cavr import CAConfig, CAState, CostAveragingEngine, VRConfig, VRState, ValueRebalancingEngine
-from core.backtest import run_backtest
 from core.fetch_data import update_ticker_data
 from core.auth import update_user_email, generate_otp, verify_otp, check_login, register_user, update_password, reset_password_request
 from core.notifier import send_telegram_message
@@ -168,7 +167,7 @@ if not st.session_state.authenticated:
         if os.path.exists("toss_logo.png"):
             st.image("toss_logo.png", width=60)
     with col_l2:
-        st.title("🔐 ToosInvest CAVR 로그인")
+        st.title("🔐 TossInvest CAVR 로그인")
     auth_mode = st.radio("모드 선택", ["로그인", "회원가입"], horizontal=True)
     
     with st.container(border=True):
@@ -344,6 +343,25 @@ def format_ticker_display(t, m_code):
         return f"{t} ({name})"
     return t
 
+def format_df_order_numbers(df: pd.DataFrame) -> pd.DataFrame:
+    """주문번호(odno) 및 노트(note)의 주문번호를 끝 10자리로 표시 (... 접두사 추가)"""
+    df = df.copy()
+    if 'odno' in df.columns:
+        df['odno'] = df['odno'].apply(lambda x: f"...{str(x)[-10:]}" if x and str(x) != 'N/A' and len(str(x)) > 10 else x)
+    if 'note' in df.columns:
+        def shrink_note_odno(text):
+            if not isinstance(text, str):
+                return text
+            # "ODNO: 202606290000012345" 패턴 매칭
+            match = re.search(r'(ODNO:\s*)(\w+)', text)
+            if match:
+                prefix, num = match.groups()
+                if len(num) > 10:
+                    return text.replace(f"{prefix}{num}", f"{prefix}...{num[-10:]}")
+            return text
+        df['note'] = df['note'].apply(shrink_note_odno)
+    return df
+
 # --- 사이드바 스케줄러 제어 ---
 def display_scheduler_control():
     st.sidebar.markdown("---")
@@ -515,7 +533,7 @@ def display_sidebar_summary(m_display, m_code):
 with st.sidebar:
     if os.path.exists("toss_logo.png"):
         st.image("toss_logo.png", width=120)
-    st.title("🚀 ToosInvest CAVR 컨트롤 패널")
+    st.title("🚀 TossInvest CAVR 컨트롤 패널")
     active_market_display = st.selectbox("활성 시장 선택 (운영 대상)", ["미국 시장", "한국 시장"], key="market_selector")
     active_market_code = "US" if active_market_display == "미국 시장" else "KR"
     
@@ -626,7 +644,7 @@ with st.sidebar:
             s_symbol = st.session_state.get(f"{m_lower}_pending_ticker", "")
         else:
             s_symbol = selected_symbol_opt
-        s_mode = st.radio("실행 모드", ["실전 투자", "백테스트"], key=f"{m_lower}_mode", horizontal=True)
+        s_mode = "실전 투자"
 
         # --- 저장된 전략 목록 불러오기 로직 추가 ---
         existing_states = get_all_states_db(strategy_type=s_choice, market=m_code)
@@ -652,14 +670,7 @@ with st.sidebar:
         # DB에서 기존 설정 로드
         d_state = load_state_db(s_symbol, s_choice, market=m_code, strategy_name=s_alias) if s_mode == "실전 투자" and s_symbol else None
 
-        # --- [통합] 백테스트 전용 설정 ---
-        f_days, f_rate, t_rate = 300, 0.0007, 0.0
-        if s_mode == "백테스트":
-            col_bt1, col_bt2 = st.columns(2)
-            f_days = col_bt1.number_input("데이터 기간 (일)", value=300, min_value=30, key=f"{m_lower}_{widget_suffix}_bt_days")
-            f_rate = col_bt2.number_input("수수료 (%)", value=0.07, step=0.01, format="%.4f", key=f"{m_lower}_{widget_suffix}_bt_fee") / 100.0
-            if m_code == "KR":
-                t_rate = st.number_input("매도 세금 (%)", value=0.25, step=0.01, format="%.4f", key=f"{m_lower}_{widget_suffix}_bt_tax") / 100.0
+
         
         if s_choice == "CA":
             # [CA 전용] 전략 할당 예수금만 표시
@@ -682,7 +693,7 @@ with st.sidebar:
             return {
                 "mode": s_mode, "strategy": s_choice, "alias": s_alias, "symbol": s_symbol, "pool": s_pool, "version": s_ver,
                 "unit_buy": u_buy, "target_profit": t_profit, "a_default": a_val, "use_quarter_stop": q_stop,
-                "initial_cash": s_pool, "fetch_days": f_days, "fee_rate": f_rate, "tax_rate": t_rate
+                "initial_cash": s_pool
             }
         else:
             # [VR 전용] 운용 자본금만 표시 (예수금은 내부 상태 유지)
@@ -708,8 +719,7 @@ with st.sidebar:
             return {
                 "mode": s_mode, "strategy": s_choice, "alias": s_alias, "symbol": s_symbol, "pool": def_pool,
                 "g_value": g_val, "band_pct": b_pct, "periodic_amt": p_amt,
-                "initial_cash": i_cash, "investment_type": v_type, "freq": v_freq, "invest_type_disp": v_type_disp,
-                "fetch_days": f_days, "fee_rate": f_rate, "tax_rate": t_rate
+                "initial_cash": i_cash, "investment_type": v_type, "freq": v_freq, "invest_type_disp": v_type_disp
             }
 
     # [수정] 사이드바 탭을 제거하고 활성 시장에 맞는 설정만 렌더링하여 UI 혼선 방지
@@ -730,9 +740,6 @@ with st.sidebar:
     # [UI 상태 저장] 선택이 변경될 때마다 DB 업데이트
     save_ui_settings_db(st.session_state.user_email, active_market_display, symbol, strategy_alias)
     initial_cash = active_settings["initial_cash"]
-    fetch_days = active_settings.get("fetch_days", 300)
-    fee_rate = active_settings.get("fee_rate", 0.0007)
-    tax_rate = active_settings.get("tax_rate", 0.0)
 
     if strategy_choice == "CA":
         unit_buy = active_settings["unit_buy"]
@@ -793,82 +800,76 @@ with st.sidebar:
                         st.sidebar.error(msg)
 
     if save_run_btn:
-        if mode == "실전 투자":
-            # 중복 전략 확인
-            existing_state = load_state_db(symbol, strategy_choice, market=market_code, strategy_name=strategy_alias)
-            if existing_state:
-                st.sidebar.error(f"'{strategy_alias}' 전략이 이미 존재합니다. 다른 이름을 사용하거나 '전략 이름 변경'을 이용하세요.")
-                st.stop()
-            # 현재 입력된 파라미터로 새로운 전략 객체 생성
+        # 중복 전략 확인
+        existing_state = load_state_db(symbol, strategy_choice, market=market_code, strategy_name=strategy_alias)
+        if existing_state:
+            st.sidebar.error(f"'{strategy_alias}' 전략이 이미 존재합니다. 다른 이름을 사용하거나 '전략 이름 변경'을 이용하세요.")
+            st.stop()
+        # 현재 입력된 파라미터로 새로운 전략 객체 생성
+        if strategy_choice == "CA":
+            new_state = CAState(
+                symbol=symbol,
+                strategy_type="CA",
+                version=ca_version,
+                strategy_name=strategy_alias,
+                market=market_code,
+                cycle_budget=initial_cash, # 사이드바 초기자본 값 사용
+                pool=allocated_pool,       # 할당 예수금 저장
+                unit_buy_amount=unit_buy,
+                a_default=a_default,
+                # 나머지 필드는 기본값 사용
+            )
+        elif strategy_choice == "VR":
+            new_state = VRState(
+                symbol=symbol,
+                strategy_type="VR",
+                strategy_name=strategy_alias,
+                market=market_code,
+                initial_budget=initial_cash, # 사이드바 초기자본 값 사용
+                pool=allocated_pool,       # 할당 예수금 저장
+                periodic_accumulation=vr_periodic_amt,
+                # 나머지 필드는 기본값 사용
+            )
+        
+        # DB에 저장
+        save_state_db(new_state, market=market_code, strategy_name=strategy_alias)
+        # 스케줄러 가동 상태로 전환
+        set_config("scheduler_status", "running")
+        st.sidebar.success(f"✅ '{strategy_alias}' 저장 및 스케줄러 실행 시작!")
+        time.sleep(1)
+        st.rerun()
+    if update_strategy_btn:
+        # 기존 전략 로드
+        existing_state_data = load_state_db(symbol, strategy_choice, market=market_code)
+        if existing_state_data:
+            # 현재 사이드바 파라미터로 업데이트
             if strategy_choice == "CA":
-                new_state = CAState(
-                    symbol=symbol,
-                    strategy_type="CA",
-                    version=ca_version,
-                    strategy_name=strategy_alias,
-                    market=market_code,
-                    cycle_budget=initial_cash, # 사이드바 초기자본 값 사용
-                    pool=allocated_pool,       # 할당 예수금 저장
-                    unit_buy_amount=unit_buy,
-                    a_default=a_default,
-                    # 나머지 필드는 기본값 사용
-                )
+                state_obj = CAState(**existing_state_data)
+                state_obj.strategy_name = strategy_alias
+                state_obj.version = ca_version
+                state_obj.cycle_budget = initial_cash
+                state_obj.pool = allocated_pool
+                state_obj.unit_buy_amount = unit_buy
+                state_obj.a_default = a_default
+                state_obj.target_profit_pct = target_profit
+                state_obj.use_quarter_stop = use_quarter_stop
             elif strategy_choice == "VR":
-                new_state = VRState(
-                    symbol=symbol,
-                    strategy_type="VR",
-                    strategy_name=strategy_alias,
-                    market=market_code,
-                    initial_budget=initial_cash, # 사이드바 초기자본 값 사용
-                    pool=allocated_pool,       # 할당 예수금 저장
-                    periodic_accumulation=vr_periodic_amt,
-                    # 나머지 필드는 기본값 사용
-                )
-            
-            # DB에 저장
-            save_state_db(new_state, market=market_code, strategy_name=strategy_alias)
-            # 스케줄러 가동 상태로 전환
-            set_config("scheduler_status", "running")
-            st.sidebar.success(f"✅ '{strategy_alias}' 저장 및 스케줄러 실행 시작!")
+                state_obj = VRState(**existing_state_data)
+                state_obj.strategy_name = strategy_alias
+                state_obj.initial_budget = initial_cash
+                state_obj.pool = allocated_pool
+                state_obj.periodic_accumulation = vr_periodic_amt
+                state_obj.G = vr_g_value
+                state_obj.band_low_pct = 100.0 - vr_band_pct
+                state_obj.band_high_pct = 100.0 + vr_band_pct
+                state_obj.investment_type = vr_investment_type
+                                
+            save_state_db(state_obj, market=market_code, strategy_name=strategy_alias)
+            st.sidebar.success(f"✅ '{strategy_alias}' 전략이 업데이트되었습니다.")
             time.sleep(1)
             st.rerun()
         else:
-            st.sidebar.warning("백테스트 모드에서는 전략을 저장할 수 없습니다.")
-    if update_strategy_btn:
-        if mode == "실전 투자":
-            # 기존 전략 로드
-            existing_state_data = load_state_db(symbol, strategy_choice, market=market_code)
-            if existing_state_data:
-                # 현재 사이드바 파라미터로 업데이트
-                if strategy_choice == "CA":
-                    state_obj = CAState(**existing_state_data)
-                    state_obj.strategy_name = strategy_alias
-                    state_obj.version = ca_version
-                    state_obj.cycle_budget = initial_cash
-                    state_obj.pool = allocated_pool
-                    state_obj.unit_buy_amount = unit_buy
-                    state_obj.a_default = a_default
-                    state_obj.target_profit_pct = target_profit
-                    state_obj.use_quarter_stop = use_quarter_stop
-                elif strategy_choice == "VR":
-                    state_obj = VRState(**existing_state_data)
-                    state_obj.strategy_name = strategy_alias
-                    state_obj.initial_budget = initial_cash
-                    state_obj.pool = allocated_pool
-                    state_obj.periodic_accumulation = vr_periodic_amt
-                    state_obj.G = vr_g_value
-                    state_obj.band_low_pct = 100.0 - vr_band_pct
-                    state_obj.band_high_pct = 100.0 + vr_band_pct
-                    state_obj.investment_type = vr_investment_type
-                                    
-                save_state_db(state_obj, market=market_code, strategy_name=strategy_alias)
-                st.sidebar.success(f"✅ '{strategy_alias}' 전략이 업데이트되었습니다.")
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.sidebar.warning("업데이트할 기존 전략을 찾을 수 없습니다. '새 전략 저장'을 이용하세요.")
-        else:
-            st.sidebar.warning("백테스트 모드에서는 전략을 업데이트할 수 없습니다.")
+            st.sidebar.warning("업데이트할 기존 전략을 찾을 수 없습니다. '새 전략 저장'을 이용하세요.")
     if delete_strategy_btn:
         if st.sidebar.button("정말 삭제하시겠습니까?", key="confirm_delete_btn"):
             delete_strategy_db(symbol, strategy_choice, market=market_code, strategy_name=strategy_alias)
@@ -901,7 +902,7 @@ with col_title1:
     if os.path.exists("toss_logo.png"):
         st.image("toss_logo.png", width=65)
 with col_title2:
-    st.title(f"🚀 ToosInvest {mode} - {strategy_choice} 전략")
+    st.title(f"🚀 TossInvest {mode} - {strategy_choice} 전략")
 
 # --- 시장별 현황 탭 --- (사이드바 선택에 따라 강조 및 필터링)
 # [수정] 활성 시장에 따라 탭 순서를 동적으로 변경하여 첫 번째 탭이 항상 활성 시장을 가리키도록 함
@@ -1248,6 +1249,7 @@ with tab_finished:
                     c_st5.metric("전략 유형", "VR")
                 c_st6.metric("실현 MDD", f"{mdd_val:.2f}%")
 
+                df_h_filtered = format_df_order_numbers(df_h_filtered)
                 st.dataframe(df_h_filtered, use_container_width=True)
             else:
                 st.caption("관련 거래 내역이 없습니다.")
@@ -1827,6 +1829,7 @@ if mode == "실전 투자":
                 cols_ord, rows_ord = get_order_history_db(symbol)
                 if rows_ord:
                     df_orders = pd.DataFrame(rows_ord, columns=cols_ord)
+                    df_orders = format_df_order_numbers(df_orders)
                     # 주문유형 코드 변환 및 컬럼명 변경
                     df_orders['주문유형'] = df_orders['type'].map(lambda x: ORDER_TYPE_MAP.get(x, x))
                     # 가격 컬럼을 소수점 4자리 문자열로 변환하여 확인 가능하게 함
@@ -1921,6 +1924,7 @@ if mode == "실전 투자":
                     selected_aliases = st.multiselect("별칭 필터 (Alias Filter)", options=unique_aliases, default=unique_aliases, key=f"alias_filter_ca_{symbol}")
                     df_log = df_log[df_log['별칭'].fillna("N/A").astype(str).isin(selected_aliases)]
 
+                    df_log = format_df_order_numbers(df_log)
                     st.dataframe(df_log, use_container_width=True)
                 else:
                     st.info(f"💡 '{symbol}' ({strategy_alias})의 {market_code} 거래 내역이 DB에 없습니다.")
@@ -1929,7 +1933,8 @@ if mode == "실전 투자":
                         _, raw_rows = get_detailed_trade_history_db(None)
                         if raw_rows:
                             st.write("DB에 존재하는 전체 거래 내역 (디버깅용):")
-                            st.dataframe(pd.DataFrame(raw_rows), use_container_width=True)
+                            raw_df = format_df_order_numbers(pd.DataFrame(raw_rows))
+                            st.dataframe(raw_df, use_container_width=True)
                         else:
                             st.error("DB의 trade_history 테이블이 완전히 비어 있습니다.")
 
@@ -2118,6 +2123,7 @@ if mode == "실전 투자":
                 cols_ord, rows_ord = get_order_history_db(symbol)
                 if rows_ord:
                     df_orders = pd.DataFrame(rows_ord, columns=cols_ord)
+                    df_orders = format_df_order_numbers(df_orders)
                     df_orders['주문유형'] = df_orders['type'].map(lambda x: ORDER_TYPE_MAP.get(x, x))
                     # 가격 컬럼을 소수점 4자리 문자열로 변환하여 확인 가능하게 함
                     if market_code == "KR":
@@ -2201,6 +2207,7 @@ if mode == "실전 투자":
                     selected_aliases = st.multiselect("별칭 필터 (Alias Filter)", options=unique_aliases, default=unique_aliases, key=f"alias_filter_vr_{symbol}")
                     df_log = df_log[df_log['별칭'].fillna("N/A").astype(str).isin(selected_aliases)]
 
+                    df_log = format_df_order_numbers(df_log)
                     st.dataframe(df_log, use_container_width=True)
                 else:
                     st.info("아직 거래 내역이 없습니다. (실시간 체결 시 자동 기록됩니다)")
@@ -2243,155 +2250,7 @@ if mode == "실전 투자":
             else:
                 st.info("상단의 '🔄 현재 계좌 상태 조회'를 먼저 실행해주세요.")
 
-elif mode == "백테스트":
-    # === 백테스트 화면 ===
-    # Use session state to manage the flow
-    if 'run_state' not in st.session_state:
-        st.session_state.run_state = 'idle'
 
-    csv_path = os.path.join("data", f"{symbol}.csv")
-    file_exists = os.path.exists(csv_path)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if file_exists and st.session_state.run_state == 'idle':
-            st.info(f"'{symbol}.csv' 파일 보유 중")
-            if st.button("기존 데이터로 실행", use_container_width=True):
-                st.session_state.run_state = 'run_with_existing'
-                st.rerun()
-        elif st.session_state.run_state == 'idle':
-            if st.button("데이터 수집 및 실행", type="primary", use_container_width=True):
-                st.session_state.run_state = 'run_with_new'
-                st.rerun()
-    with col2:
-        if file_exists and st.session_state.run_state == 'idle':
-            if st.button("데이터 새로 수집 후 실행", type="primary", use_container_width=True):
-                st.session_state.run_state = 'run_with_new'
-                st.rerun()
-
-    # 실행 로직
-    if st.session_state.run_state in ['run_with_existing', 'run_with_new']:
-        # 1. 데이터 수집
-        if st.session_state.run_state == 'run_with_new':
-            with st.spinner(f'{symbol} 데이터 수집 중...'):
-                success, msg = update_ticker_data(symbol, days=int(fetch_days), market=market_code)
-            if not success:
-                st.error(msg)
-                st.session_state.run_state = 'idle'
-                st.stop()
-            else:
-                st.success(msg)
-
-        # 2. 백테스트 실행
-        with st.spinner('시뮬레이션 중...'):
-            # 공통 파라미터
-            backtest_kwargs = {
-                "strategy_type": strategy_choice,
-                "symbol": symbol,
-                "file_path": csv_path,
-                "initial_cash": float(initial_cash),
-                "fee_rate": float(fee_rate),
-                "market": market_code,
-                "tax_rate": float(tax_rate if 'tax_rate' in locals() else 0.0)
-            }
-            
-            # 전략별 파라미터 주입
-            if strategy_choice == "CA":
-                backtest_kwargs.update({
-                    "unit_buy_amount": float(unit_buy),
-                    "target_profit_pct": target_profit,
-                    "a_default": int(a_default),
-                    "use_quarter_stop": use_quarter_stop,
-                })
-            elif strategy_choice == "VR":
-                backtest_kwargs.update({
-                    "G": float(vr_g_value),
-                    "band_low_pct": 100.0 - vr_band_pct,
-                    "band_high_pct": 100.0 + vr_band_pct,
-                    "initial_budget": float(initial_cash),
-                    "periodic_accumulation": float(vr_periodic_amt),
-                    "contribution_frequency": vr_freq,
-                    "investment_type": vr_investment_type
-                })
-
-            result_text, result_df, trade_history_df = run_backtest(**backtest_kwargs)
-            
-            # 텔레그램으로 백테스트 결과 요약 전송
-            if result_text:
-                send_telegram_message(f"🧪 <b>[{symbol} 백테스트 완료]</b>\n<pre>{html.escape(result_text)}</pre>")
-        
-        # 3. 결과 표시
-        st.text_area("결과 요약", value=result_text, height=200)
-        
-        if not result_df.empty:
-            from plotly.subplots import make_subplots
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
-            
-            # 1. 자산 변동 (좌축) - 시장별 통화 기호 적용
-            fig.add_trace(go.Scatter(x=result_df['Date'], y=result_df['TotalEquity'], mode='lines', name=f'Total Equity ({currency_symbol})'), secondary_y=False)
-            
-            # 2. 주가 변동 (우축)
-            fig.add_trace(go.Scatter(x=result_df['Date'], y=result_df['Close'], mode='lines', name='Close Price', line=dict(dash='dot', color='grey', width=1)), secondary_y=True)
-            
-            # VR 정보 표시 (Target V, Pool, Bands)
-            if 'Target_V' in result_df.columns:
-                # Target V
-                fig.add_trace(go.Scatter(
-                    x=result_df['Date'], y=result_df['Target_V'], name=f'Target V ({currency_symbol})',
-                    mode='lines',
-                    line=dict(dash='dash', color='orange')
-                ), secondary_y=False)
-                
-                # Cash Pool (현금) 표시
-                if 'Pool' in result_df.columns:
-                    fig.add_trace(go.Scatter(
-                        x=result_df['Date'], y=result_df['Pool'], name=f'Cash Pool ({currency_symbol})',
-                        mode='lines',
-                        line=dict(color='cyan', width=1, dash='dot')
-                    ), secondary_y=False)
-
-                # Bands Calculation
-                # 슬라이더 값(vr_band_pct)을 가져오거나 기본값 사용
-                vr_band_val = locals().get('vr_band_pct', 15)
-                band_val = vr_band_val / 100.0
-                upper_band = result_df['Target_V'] * (1 + band_val)
-                lower_band = result_df['Target_V'] * (1 - band_val)
-                
-                # Band Area (Low ~ High)
-                fig.add_trace(go.Scatter(
-                    x=result_df['Date'], y=lower_band,
-                    mode='lines', line=dict(width=0), showlegend=False,
-                ), secondary_y=False)
-                fig.add_trace(go.Scatter(
-                    x=result_df['Date'], y=upper_band,
-                    mode='lines', name=f'Band (±{vr_band_val}%)',
-                    line=dict(width=0),
-                    fill='tonexty', fillcolor='rgba(255, 165, 0, 0.1)'
-                ), secondary_y=False)
-
-            # 3. 매매 마커 (우축 - 주가 위에 표시)
-            if not trade_history_df.empty:
-                buys = trade_history_df[trade_history_df['type'] == 'BUY']
-                sells = trade_history_df[trade_history_df['type'] == 'SELL']
-                
-                if not buys.empty:
-                    fig.add_trace(go.Scatter(
-                        x=buys['Date'], y=buys['price'], mode='markers', name='Buy',
-                        marker=dict(color='green', size=8, symbol='triangle-up')), secondary_y=True)
-                
-                if not sells.empty:
-                    fig.add_trace(go.Scatter(
-                        x=sells['Date'], y=sells['price'], mode='markers', name='Sell',
-                        marker=dict(color='red', size=8, symbol='triangle-down')), secondary_y=True)
-
-            fig.update_yaxes(title_text=f"Total Equity ({currency_symbol})", secondary_y=False)
-            fig.update_yaxes(title_text=f"Close Price ({currency_symbol})", secondary_y=True)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            with st.expander("상세 데이터"):
-                st.dataframe(result_df)
-        
-        st.session_state.run_state = 'idle'
 
 # --- 하단 로그 영역 ---
 st.divider()

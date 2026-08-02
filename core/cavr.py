@@ -473,7 +473,7 @@ class CostAveragingEngine:
 
         # [수정] 거래소 전체 현금이 아닌 전략에 할당된 POOL(self.state.pool) 기준 체크
         if self.state.pool < amount_to_invest or price <= 0:
-            logger.info(f"⚠️ [매수 스킵] {self.config.symbol}: 잔고부족(보유:{self.broker.get_cash_pool():.2f} < 필요:{amount_to_invest:.2f}) 또는 가격오류({price})")
+            logger.info(f"⚠️ [매수 스킵] {self.config.symbol}: 잔고부족(보유:{self.state.pool:.2f} < 필요:{amount_to_invest:.2f}) 또는 가격오류({price})")
             return False
 
         # [Multi-Market] KR 시장은 LOC/MOC 미지원 -> 지정가(00) 강제
@@ -1461,7 +1461,7 @@ class ValueRebalancingEngine:
         day_high = self.broker.get_current_high(symbol=self.config.symbol)
         day_low = self.broker.get_current_low(symbol=self.config.symbol)
         shares, _, eval_amt = self.broker.get_account_equity(self.config.symbol, strategy_name=self.config.strategy_name)
-        cash_on_account = self.broker.get_cash_pool()
+        cash_on_account = self.state.pool
         E = eval_amt + cash_on_account
 
         # --- 사이클 시작일: V값 및 밴드 갱신 ---
@@ -1565,9 +1565,6 @@ class ValueRebalancingEngine:
                     break
 
         # 최종 상태 업데이트
-        if not self.config.use_db:
-            self.state.pool = self.broker.get_cash_pool()
-
         self._save_state()
         logger.info("--- 밸류리밸런싱(VR) 사이클 종료 ---")
 

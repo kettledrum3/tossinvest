@@ -1081,11 +1081,13 @@ def sync_trade_history_db(symbol, executions, strategy=None, market="US", strate
                         row_alias = row[1]
                         old_qty = float(state_dict.get('total_shares', 0))
                         old_avg = float(state_dict.get('avg_price', 0))
+                        current_pool = float(state_dict.get('pool', 0.0))
                         
                         if side == "BUY":
                             new_total_qty = old_qty + qty
                             new_avg = ((old_qty * old_avg) + (qty * price)) / new_total_qty if new_total_qty > 0 else price
                             state_dict['last_execution_price'] = price
+                            state_dict['pool'] = max(0.0, current_pool - total_amount) # 가상 예수금 차감 (수수료 포함)
                         else: # SELL
                             new_total_qty = max(0, old_qty - qty)
                             new_avg = old_avg if new_total_qty > 0 else 0.0
@@ -1093,6 +1095,7 @@ def sync_trade_history_db(symbol, executions, strategy=None, market="US", strate
                             if new_total_qty == 0:
                                 state_dict['pending_cycle_transition'] = True
                                 logger.info(f"🚩 [Sync] {symbol} 전량 매도 확인됨. 차수 전환 대기 상태로 변경.")
+                            state_dict['pool'] = current_pool + total_amount # 가상 예수금 가산 (수수료/세금 반영)
                         
                         state_dict['total_shares'] = new_total_qty
                         state_dict['avg_price'] = new_avg
@@ -1128,12 +1131,11 @@ def sync_trade_history_db(symbol, executions, strategy=None, market="US", strate
                         state_dict = json.loads(row[0])
                         row_alias = row[1]
                         current_pool = float(state_dict.get('pool', 0.0))
-                        trade_amt = price * qty
                         
                         if side == "BUY":
-                            state_dict['pool'] = current_pool - trade_amt
+                            state_dict['pool'] = max(0.0, current_pool - total_amount) # 수수료 포함 금액 차감
                         else:
-                            state_dict['pool'] = current_pool + trade_amt
+                            state_dict['pool'] = current_pool + total_amount # 수수료/세금 제외된 net 금액 가산
                         
                         cursor.execute('''
                             UPDATE strategy_state SET state_json = ?, updated_at = CURRENT_TIMESTAMP
