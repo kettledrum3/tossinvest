@@ -243,7 +243,7 @@ class KisUsBroker(Broker):
         return 0.0, 0.0, 0.0
 
 
-    def get_cash_pool(self) -> float:
+    def get_cash_pool(self, currency: str = None) -> float:
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
         tr_id = "VTTS3007R" if self.is_simulation else "TTTS3007R"
         params = {"CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd, "OVRS_EXCG_CD": "%", "OVRS_ORD_UNPR": "0", "ITEM_CD": "TQQQ"}

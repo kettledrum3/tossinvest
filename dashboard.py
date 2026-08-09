@@ -1469,8 +1469,15 @@ if mode == "실전 투자":
             with st.spinner(f"[{market_code}] Toss API 조회 중..."):
                 broker = ActiveBroker
                 
-                # 정보 조회
-                pool = broker.get_cash_pool()
+                # 정보 조회 (달러, 원화 분리 조회)
+                cash_usd = broker.get_cash_pool(currency="USD")
+                cash_krw = broker.get_cash_pool(currency="KRW")
+                
+                st.session_state[f"broker_cash_usd_cache_{market_code}"] = cash_usd
+                st.session_state[f"broker_cash_krw_cache_{market_code}"] = cash_krw
+                
+                # 하위 호환성을 위해 기존 캐시 키도 현재 시장의 기본 통화로 채워둠
+                pool = cash_krw if market_code == "KR" else cash_usd
                 st.session_state[f"broker_cash_cache_{market_code}"] = pool
                 shares, avg_price, eval_amt = broker.get_account_equity(symbol, strategy_name=strategy_alias)
                 current_price = broker.get_price(symbol)
@@ -1557,14 +1564,27 @@ if mode == "실전 투자":
             prev_close = broker.get_previous_close(symbol)
             
             # 매번 API 호출하지 않고 캐시된 예수금 사용 (트래픽 경감)
-            broker_cash = st.session_state.get(f"broker_cash_cache_{market_code}", None)
-            if broker_cash is None:
-                broker_cash = broker.get_cash_pool()
-                st.session_state[f"broker_cash_cache_{market_code}"] = broker_cash
+            cash_usd = st.session_state.get(f"broker_cash_usd_cache_{market_code}", None)
+            cash_krw = st.session_state.get(f"broker_cash_krw_cache_{market_code}", None)
+            if cash_usd is None or cash_krw is None:
+                cash_usd = broker.get_cash_pool(currency="USD")
+                cash_krw = broker.get_cash_pool(currency="KRW")
+                st.session_state[f"broker_cash_usd_cache_{market_code}"] = cash_usd
+                st.session_state[f"broker_cash_krw_cache_{market_code}"] = cash_krw
+                # 기존 캐시 동기화
+                st.session_state[f"broker_cash_cache_{market_code}"] = cash_krw if market_code == "KR" else cash_usd
         else:
             curr_price = state.get('current_price', 0)
             prev_close = curr_price
-            broker_cash = state.get('pool', 0)
+            
+            cash_usd = st.session_state.get(f"broker_cash_usd_cache_{market_code}", 0.0)
+            cash_krw = st.session_state.get(f"broker_cash_krw_cache_{market_code}", 0.0)
+            if cash_usd == 0.0 and cash_krw == 0.0:
+                db_pool = state.get('pool', 0.0)
+                if market_code == "KR":
+                    cash_krw = db_pool
+                else:
+                    cash_usd = db_pool
 
         # 수치 추출 (DB 기반 - 웹소켓 클라이언트가 업데이트한 값)
         pool = state.get('pool', 0.0)
@@ -1587,7 +1607,13 @@ if mode == "실전 투자":
         st.divider()
         col_p1, col_p2 = st.columns(2)
         col_p1.metric(label=f"💰 전략 할당 예수금 ({currency_symbol})", value=f"{currency_symbol}{format_currency(s_pool, market_code)}", help="DB의 설정 예수금에서 현재 주식 투입액을 차감한 실시간 가용 예수금입니다.")
-        col_p2.metric(label=f"🏦 거래소 총 예수금 ({currency_symbol})", value=f"{currency_symbol}{format_currency(broker_cash, market_code)}", help="증권사 계좌의 실제 출금 가능 원금입니다.")
+        
+        # col_p2 내부를 2개의 컬럼으로 쪼개어 USD와 KRW를 나란히 표시
+        with col_p2:
+            st.markdown("<div style='font-size: 14px; color: gray; margin-bottom: 5px;'>🏦 거래소 총 예수금</div>", unsafe_allow_html=True)
+            c_usd, c_krw = st.columns(2)
+            c_usd.metric(label="USD ($)", value=f"${cash_usd:,.2f}", help="증권사 계좌의 실제 출금 가능한 달러(USD) 예수금입니다.")
+            c_krw.metric(label="KRW (₩)", value=f"₩{int(cash_krw):,}", help="증권사 계좌의 실제 출금 가능한 원화(KRW) 예수금입니다.")
 
         st.subheader(f"보유 종목 현황: {format_ticker_display(symbol, market_code)}")
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -1759,12 +1785,13 @@ if mode == "실전 투자":
                                 current_t = est_t
                 
                 # Star% 계산 (CostAveragingEngine 로직 재사용 또는 직접 계산)
-                # Star% = Target - (T/2 * (T_def/a_def))/100
+                # Star% = Target * (1.0 - (T/20 * (T_def/a_def)))
                 # 여기서는 Config 값을 알 수 없으므로 사이드바 입력을 사용
                 # (주의: 사이드바 입력과 실제 실행 설정이 다를 수 있음)
                 
-                term = (current_t / 2.0) * (40 / db_a_default) 
-                star_pct = db_target_profit - (term / 100.0)
+                star_pct = db_target_profit * (1.0 - (current_t / 20.0) * (40.0 / db_a_default))
+                star_pct = round(star_pct, 9)
+                star_pct = math.ceil(star_pct * 10000) / 10000.0
                 cur_sym = currency_symbol
                 
                 st.write(f"현재 T: **{current_t:.1f}** | Star%: **{star_pct*100:.2f}%** | 1회 매수금: **{cur_sym}{format_currency(unit_buy, market_code)}**")

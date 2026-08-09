@@ -311,14 +311,15 @@ class TossBroker(Broker):
         return 0.0, 0.0, 0.0
 
 
-    def get_cash_pool(self) -> float:
+    def get_cash_pool(self, currency: str = None) -> float:
         """예수금 조회 (GET /api/v1/buying-power)"""
         try:
-            currency = "KRW" if self.market == "KR" else "USD"
+            if not currency:
+                currency = "KRW" if self.market == "KR" else "USD"
             data = self._call_api("GET", "/api/v1/buying-power", params={"currency": currency})
             return float(data.get("result", {}).get("cashBuyingPower", 0.0))
         except Exception as e:
-            logger.error(f"[TossBroker] 예수금 조회 실패: {e}")
+            logger.error(f"[TossBroker] 예수금 조회 실패 (currency={currency}): {e}")
         return 0.0
 
     def adjust_price_by_tick(self, symbol: str, price: float, order_type: Literal["BUY", "SELL"]) -> float:

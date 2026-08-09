@@ -225,3 +225,19 @@
 ### 11.3. 웹소켓(Websocket) 코드 보존
 - 토스증권 API가 향후 정식 실시간 웹소켓(Websocket) 피드를 제공할 가능성이 있으므로, 기존 KIS 기반 웹소켓 연동 모듈인 `core/ws_client.py` 및 관련 임포트 코드는 제거하지 않고 **Unused(미사용) 상태로 안전하게 보존** 처리했습니다.
 
+---
+
+## 12. 무한매수법 Star% 공식 수정 및 대시보드 예수금 분리 표시 [2026년 8월 9일 일요일]
+
+### 12.1. Star% 계산 공식 오류 수정 및 타 프로젝트 이식
+- **문제점:** 기존의 단순 뺄셈 기반 감쇄 공식은 목표수익률에 따라 $T$가 분할 수의 절반(40분할 기준 20회차)에 도달하기 훨씬 전에 `star%`가 $0\%$ 이하로 내려가거나(목표수익률이 낮을 때), 혹은 20회차에 도달해도 여전히 양수로 남아 있는 문제가 발생했습니다.
+- **수식 변경:** 목표수익률과 상관없이 $T=20$(절반) 지점에서 정확히 $0\%$가 되도록 비율 기반 곱셈 공식으로 전면 수정하였습니다.
+  $$Star\% = \text{목표수익률}(\%) \times \left(1 - \frac{T}{20} \times \frac{T_{default}}{a_{default}}\right) \%$$
+- **부동소수점 오차 보정:** 파이썬 연산의 미세 오차로 인해 올림(`math.ceil`) 시 불필요하게 `0.01%`가 튀는 문제를 보완하고자 계산값에 `round(..., 9)` 보정을 도입하였습니다.
+- **적용 대상:** [core/cavr.py](file:///d:/Python_D/tossinvest/core/cavr.py)의 `_calculate_star_percent()` 메소드 및 [dashboard.py](file:///d:/Python_D/tossinvest/dashboard.py) 내 `star_pct` 화면 연산을 수정하였습니다.
+
+### 12.2. 대시보드 거래소 총 예수금 통화별(USD/KRW) 분리 표시
+- **인터페이스 확장:** `Broker` 추상 클래스 및 `TossBroker`, `KISBroker`, `KISUSBroker`의 `get_cash_pool()` 메소드 시그니처에 선택적 파라미터 `currency: str = None`을 추가하였습니다. `TossBroker`는 이 파라미터를 사용해 TOSS OpenAPI 호출 시 해당 통화를 개별 조회합니다.
+- **조회 및 캐싱 다변화:** [dashboard.py](file:///d:/Python_D/tossinvest/dashboard.py)에서 `USD` 및 `KRW`를 순차적으로 각각 수신하여 세션 상태에 개별 캐싱 처리(`broker_cash_usd_cache_{market_code}`, `broker_cash_krw_cache_{market_code}`) 하였습니다.
+- **UI 레이아웃 개선:** 기존의 단일 메트릭 표시에서 `st.columns(2)`를 통하여 가로로 영역을 나누고, **USD ($)** 및 **KRW (₩)** 예수금을 독립적으로 표기하도록 개선하였습니다.
+

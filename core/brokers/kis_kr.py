@@ -231,7 +231,7 @@ class KisKrBroker(Broker):
         return 0.0, 0.0, 0.0
 
 
-    def get_cash_pool(self) -> float:
+    def get_cash_pool(self, currency: str = None) -> float:
         """
         계좌의 예수금(현금)을 조회합니다.
         실전: CTRP6548R (투자계좌자산현황조회)

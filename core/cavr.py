@@ -453,11 +453,16 @@ class CostAveragingEngine:
             self.state.current_turn = raw_turn # [V4.0 원칙] 반올림/올림 없음
 
     def _calculate_star_percent(self, turn: float) -> float:
-        """별값(%) 계산: 목표수익률 - (T/2 * (T_default/a_default)) %"""
+        """별값(%) 계산: 목표수익률 * (1 - T/20 * (T_default/a_default)) %"""
         t = max(0, turn)
-        term = (t / 2.0) * (self.config.T_default / self.config.a_default)
-        # [무매 공통 규칙] 별값(%)의 소수점 셋째 자리에서 올림 (0.07123 -> 0.0713)
-        raw_star = self.config.target_profit_pct - (term / 100.0)
+        
+        # 1. 공식 수정 적용
+        raw_star = self.config.target_profit_pct * (1.0 - (t / 20.0) * (self.config.T_default / self.config.a_default))
+        
+        # 2. [필수] 부동소수점 오차 보정 (올림 처리 전 미세 오차 제거)
+        raw_star = round(raw_star, 9)
+        
+        # 3. 소수점 넷째 자리 올림 (무한매수법 공통 규칙)
         return math.ceil(raw_star * 10000) / 10000.0
 
     def _buy(self, amount_to_invest: float, price: float, desc: str, turn: float = None, price_type: str = "00", preview: bool = False) -> bool:

@@ -40,7 +40,7 @@ class Broker:
         shares, avg_price, _ = res
         return shares * avg_price
     
-    def get_cash_pool(self) -> float:
+    def get_cash_pool(self, currency: str = None) -> float:
         raise NotImplementedError
 
     def adjust_price_by_tick(self, symbol: str, price: float, order_type: Literal["BUY", "SELL"]) -> float:
