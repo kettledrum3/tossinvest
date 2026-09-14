@@ -727,10 +727,12 @@ class KisWebSocketClient:
                             ca_state.avg_price = new_avg
                             ca_state.last_execution_price = price # 장중 매수 기준점 업데이트
                             
-                            unit_buy = float(ca_state.unit_buy_amount)
-                            if unit_buy > 0:
+                            a_def = getattr(ca_state, 'a_default', 40) or 40
+                            c_budget = getattr(ca_state, 'cycle_budget', 0.0) or 0.0
+                            base_unit_buy = (c_budget / a_def) if (c_budget > 0 and a_def > 0) else float(ca_state.unit_buy_amount)
+                            if base_unit_buy > 0:
                                 invested = new_shares * new_avg
-                                ca_state.current_turn = math.ceil((invested / unit_buy) * 10) / 10.0
+                                ca_state.current_turn = math.ceil((invested / base_unit_buy) * 10) / 10.0
                             
                         elif order_type == "SELL":
                             new_shares = max(0, current_shares - qty)

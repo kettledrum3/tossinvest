@@ -241,3 +241,26 @@
 - **조회 및 캐싱 다변화:** [dashboard.py](file:///d:/Python_D/tossinvest/dashboard.py)에서 `USD` 및 `KRW`를 순차적으로 각각 수신하여 세션 상태에 개별 캐싱 처리(`broker_cash_usd_cache_{market_code}`, `broker_cash_krw_cache_{market_code}`) 하였습니다.
 - **UI 레이아웃 개선:** 기존의 단일 메트릭 표시에서 `st.columns(2)`를 통하여 가로로 영역을 나누고, **USD ($)** 및 **KRW (₩)** 예수금을 독립적으로 표기하도록 개선하였습니다.
 
+---
+
+## 13. 무한매수법 V4.0 회차(T) 계산 기준분할매수금 적용 및 리버스 모드 무한 루프 버그 해결 [2026년 9월 15일 화요일]
+
+### 13.1. 유동 매수액 역산 오류로 인한 리버스 모드 무한 재귀 루프 해결
+- **문제점:**
+  - V4.0 전략 운용 중 남은 가용 예수금(`s_pool`)과 남은 슬롯(`a - T`)을 기준으로 1회 매수금(`unit_buy_amount`)이 유동적으로 축소(예: 약 $24.20)된 상태에서, 총 누적 매수액($2,009.78)을 이 축소된 유동 매수금으로 나누어 $T$를 역산하면서 $T$가 **83.03**으로 비정상 폭등했습니다.
+  - 이로 인해 실제로는 원금 소진 상태가 아님에도 $T > 19$($a-1$) 조건에 걸려 리버스 모드(`REVERSE`)로 강제 진입했습니다.
+  - 그러나 실제 주가 손실률(-5.9%)은 리버스 탈출 기준(-15%)보다 양호하여 진입 즉시 일반 모드(`NORMAL`) 복귀 후 `run_cycle()`을 재귀 호출하게 되었고, 복귀 시 $T$값이 여전히 83.03인 채로 재호출되어 **리버스 진입 ↔ 복귀가 0.1초 단위로 무한 핑퐁 반복(Infinite Recursion Loop)**되면서 텔레그램 메시지가 폭주하고 프로세스가 갇히는 장애가 발생했습니다.
+
+### 13.2. 기준분할매수금(base_unit_buy_amount) 기반 T 계산 로직 개편
+- **기준분할매수금 산출 메서드 신설 ([core/cavr.py](file:///d:/Python_D/tossinvest/core/cavr.py)):**
+  - 사이클 예산과 분할 횟수 기준의 고정 분할금인 `_get_base_unit_buy_amount()`를 추가했습니다.
+    $$\text{base\_unit\_buy\_amount} = \frac{\text{cycle\_budget}}{\text{a\_default}}$$
+- **T(회차) 산출 분모 교체:**
+  - `CostAveragingEngine` 내 `_update_current_turn_from_broker()` 및 `run_cycle()`에서 $T$를 계산할 때 유동 1회 매수금 대신 **기준분할매수금(`base_unit_buy`)**을 분모로 나누도록 수정하여 잔금 변동에 따른 $T$값 왜곡 및 비정상 폭등을 원천 방지했습니다.
+  - [dashboard.py](file:///d:/Python_D/tossinvest/dashboard.py) 계좌 조회 동기화 및 [core/ws_client.py](file:///d:/Python_D/tossinvest/core/ws_client.py) 실시간 체결 처리 시의 $T$값 계산식에도 동일하게 기준분할매수금을 적용하여 시스템 전반의 일관성을 확보했습니다.
+
+### 13.3. DB 상태값(TQQQ) 정상화
+- **실제 체결 기반 수치 정합성 복구:**
+  - TQQQ 전략(`T_TQQQ_1차`)의 $T$값을 실제 체결 누적액($2,009.78) 및 기준분할매수금($150.00)에 맞게 **13.40회차**로 정정했습니다.
+  - 운용 모드를 `NORMAL`로 안정화하고, 남은 회차(6.6회차) 기준 유동 매수금($54.64) 및 당일 기준 Star% 값(2.32%)을 공식에 맞게 정상 재산출하여 DB에 반영 완료했습니다.
+

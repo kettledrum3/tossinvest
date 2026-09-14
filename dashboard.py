@@ -1491,9 +1491,12 @@ if mode == "실전 투자":
                         state_obj.avg_price = avg_price
                         state_obj.total_shares = shares
                         # T값 재계산 (현재 누적액 기준)
-                        if state_obj.unit_buy_amount > 0:
+                        a_def = getattr(state_obj, 'a_default', 40) or 40
+                        c_budget = getattr(state_obj, 'cycle_budget', 0.0) or 0.0
+                        base_unit_buy = (c_budget / a_def) if (c_budget > 0 and a_def > 0) else state_obj.unit_buy_amount
+                        if base_unit_buy > 0:
                             invested = avg_price * shares
-                            state_obj.current_turn = math.ceil((invested / state_obj.unit_buy_amount) * 10) / 10.0
+                            state_obj.current_turn = math.ceil((invested / base_unit_buy) * 10) / 10.0
                         save_state_db(state_obj, market=market_code, strategy_name=strategy_alias) # strategy_name도 함께 저장
                     elif strategy_choice == "VR":
                         state_obj = VRState(**state_data)

@@ -441,6 +441,16 @@ class CostAveragingEngine:
             mode="NORMAL"
         )
 
+    def _get_base_unit_buy_amount(self) -> float:
+        """T(회차) 계산의 기준이 되는 기준분할매수금 (cycle_budget / a_default)"""
+        a_def = self.config.a_default if self.config.a_default > 0 else 40
+        budget = self.state.cycle_budget if self.state.cycle_budget > 0 else self.config.initial_budget
+        if budget > 0 and a_def > 0:
+            return budget / a_def
+        if self.config.unit_buy_amount > 0:
+            return self.config.unit_buy_amount
+        return 250.0
+
     def _update_current_turn_from_broker(self, shares=None, avg_price=None):
         """브로커 정보를 기반으로 회차(T)를 동기화합니다. 정보가 주어지면 API 호출을 생략합니다."""
         if shares is not None and avg_price is not None:
@@ -448,8 +458,9 @@ class CostAveragingEngine:
         else:
             cumulative_buy_amount = self.broker.get_cumulative_buy_amount(self.config.symbol, strategy_name=self.config.strategy_name) or 0.0
             
-        if self.config.unit_buy_amount > 0:
-            raw_turn = cumulative_buy_amount / self.config.unit_buy_amount
+        base_unit_buy = self._get_base_unit_buy_amount()
+        if base_unit_buy > 0:
+            raw_turn = cumulative_buy_amount / base_unit_buy
             self.state.current_turn = raw_turn # [V4.0 원칙] 반올림/올림 없음
 
     def _calculate_star_percent(self, turn: float) -> float:
@@ -884,9 +895,10 @@ class CostAveragingEngine:
         if self.state.cycle_budget > 0:
             progress_rate = cumulative_buy_amount / self.state.cycle_budget
         
-        # T(회차) 계산 = 실제 누적 매수액 / 1회 매수 계획금액
-        if self.config.unit_buy_amount > 0:
-            raw_turn = cumulative_buy_amount / self.config.unit_buy_amount
+        # T(회차) 계산 = 실제 누적 매수액 / 기준분할매수금
+        base_unit_buy = self._get_base_unit_buy_amount()
+        if base_unit_buy > 0:
+            raw_turn = cumulative_buy_amount / base_unit_buy
             self.state.current_turn = raw_turn # [V4.0 원칙] 반올림/올림 없음
 
         # [ADD] 당일 로직 수행을 위한 T값 및 Star% 스냅샷 고정
