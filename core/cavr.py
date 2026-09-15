@@ -1193,6 +1193,11 @@ class CostAveragingEngine:
         # 전반전 (진행률 < 50%)
         logger.debug(f"[DEBUG] 매수 루틴: Progress={progress_rate:.2f}, Star={star:.4f}, NextTurn={self.state.current_turn + 0.5}")
         # 주의: sold_all 직후에는 progress_rate가 0.0이므로 전반전 로직을 타게 됨
+        # 큰수 LOC 매수 기준가 (자전거래 방지 보장: 매도 호가보다 최소 1틱 낮게 유지)
+        loc_sell_ref = self._round_price(base_price * (1.0 + star), "SELL")
+        max_buy_allowed = self._round_price(loc_sell_ref + loc_buy_offset, "BUY")
+        limit_star_buy = min(self._round_price((base_price * (1.0 + star)) + loc_buy_offset, "BUY"), max_buy_allowed)
+
         if progress_rate < 0.5:
             half_amount = self.config.unit_buy_amount * 0.5
             
@@ -1200,14 +1205,14 @@ class CostAveragingEngine:
             limit_price_1 = min(base_price, current_price * 1.15)
             self._buy(half_amount, limit_price_1, f"(전반전) 평단가 매수 ({ORDER_TYPE_MAP['34']})", turn=turn_to_log, price_type="34", preview=preview) # LOC
 
-            # 큰수 LOC: min(평단*(1+Star%), 현재가*1.15)
-            limit_price_2 = min((base_price * (1.0 + star)) + loc_buy_offset, current_price * 1.15)
+            # 큰수 LOC: min(큰수매수가, 현재가*1.15)
+            limit_price_2 = min(limit_star_buy, current_price * 1.15)
             self._buy(half_amount, limit_price_2, f"(전반전) 큰수LOC 매수 ({ORDER_TYPE_MAP['34']})", turn=turn_to_log, price_type="34", preview=preview) # LOC
                 
         # 후반전 (진행률 >= 50%)
         else:
-            # 큰수 LOC: min(평단*(1+Star%), 현재가*1.15)
-            limit_price = min((base_price * (1.0 + star)) + loc_buy_offset, current_price * 1.15)
+            # 큰수 LOC: min(큰수매수가, 현재가*1.15)
+            limit_price = min(limit_star_buy, current_price * 1.15)
             self._buy(self.config.unit_buy_amount, limit_price, f"(후반전) 큰수LOC 매수 ({ORDER_TYPE_MAP['34']})", turn=turn_to_log, price_type="34", preview=preview) # LOC
 
     def _save_and_finish(self, current_price: float = 0.0, silent: bool = False, shares=None, avg_price=None):

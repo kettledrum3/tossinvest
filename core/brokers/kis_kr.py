@@ -301,12 +301,13 @@ class KisKrBroker(Broker):
         """호가 단위에 맞게 가격 보정 (매수 시 올림, 매도 시 내림)"""
         if price <= 0: return 0
         tick = self._get_tick_size(symbol, price)
+        scaled = round(price / tick, 6)
         if order_type == "BUY":
             # 호가 단위로 올림 (예: 2001원 -> 2005원)
-            return int(math.ceil(price / tick) * tick)
+            return int(math.ceil(scaled) * tick)
         else:
             # 호가 단위로 내림 (예: 2004원 -> 2000원)
-            return int(math.floor(price / tick) * tick)
+            return int(math.floor(scaled) * tick)
 
     def place_order(self, symbol: str, price: float, qty: float, order_type: Literal["BUY", "SELL"], price_type: str = "00", strategy: str = "MANUAL") -> bool:
         """

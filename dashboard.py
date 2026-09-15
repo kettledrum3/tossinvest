@@ -1816,13 +1816,18 @@ if mode == "실전 투자":
                         # [개선] 예산 범위 내에서 최소 1주 보장 표시
                         if qty_avg <= 0 and unit_buy > 0 and db_pool >= avg_price:
                             qty_avg = 1 # 최소 1주 매수
-                        buy_rows.append({"구분": buy_label_1, f"가격 ({cur_sym})": format_currency(avg_price, market_code), "수량 (주)": qty_avg})
+                        price_avg_disp = ActiveBroker.adjust_price_by_tick(symbol, avg_price, "BUY")
+                        buy_rows.append({"구분": buy_label_1, f"가격 ({cur_sym})": format_currency(price_avg_disp, market_code), "수량 (주)": qty_avg})
                     
                     # LOC Star% 매수 (평단 * (1+Star) + Offset)
                     # 주의: Star가 음수일 경우 평단보다 낮게 매수
                     if avg_price > 0:
                         # 자전거래 방지를 위해 매수 가격에서 오프셋 차감 (KR: -10, US: -0.01)
-                        price_star = (avg_price * (1 + star_pct)) + (-10 if market_code == "KR" else -0.01)
+                        loc_offset = -10 if market_code == "KR" else -0.01
+                        loc_sell_ref = ActiveBroker.adjust_price_by_tick(symbol, avg_price * (1 + star_pct), "SELL")
+                        price_star_raw = (avg_price * (1 + star_pct)) + loc_offset
+                        max_buy_allowed = ActiveBroker.adjust_price_by_tick(symbol, loc_sell_ref + loc_offset, "BUY")
+                        price_star = min(ActiveBroker.adjust_price_by_tick(symbol, price_star_raw, "BUY"), max_buy_allowed)
                         if price_star > 0:
                             qty_star = int((unit_buy * 0.5) / price_star)
                             if qty_star <= 0 and unit_buy > 0 and db_pool >= price_star:
@@ -1844,12 +1849,12 @@ if mode == "실전 투자":
                         qty_sell_25 = int(total_shares * 0.25)
                         qty_sell_75 = total_shares - qty_sell_25
 
-                        # Star% 매도 (오프셋 제거)
-                        price_sell_loc = avg_price * (1 + star_pct)
+                        # Star% 매도 (호가 단위 보정 적용: 절사)
+                        price_sell_loc = ActiveBroker.adjust_price_by_tick(symbol, avg_price * (1 + star_pct), "SELL")
                         sell_rows.append({"구분": sell_label_1, f"가격 ({cur_sym})": format_currency(price_sell_loc, market_code), "수량 (주)": qty_sell_25})
                         
-                        # 지정가 목표수익률 매도
-                        price_sell_limit = avg_price * (1 + db_target_profit)
+                        # 지정가 목표수익률 매도 (호가 단위 보정 적용: 절사)
+                        price_sell_limit = ActiveBroker.adjust_price_by_tick(symbol, avg_price * (1 + db_target_profit), "SELL")
                         sell_rows.append({"구분": f"지정가 {db_target_profit*100:.0f}% (75%)", f"가격 ({cur_sym})": format_currency(price_sell_limit, market_code), "수량 (주)": int(qty_sell_75)})
                         
                     st.table(pd.DataFrame(sell_rows))

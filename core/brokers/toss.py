@@ -326,10 +326,13 @@ class TossBroker(Broker):
         """호가 단위를 가격에 맞추어 보정"""
         if self.market == "US":
             # 미국 주식: $1 이상 소수점 2자리, $1 미만 소수점 4자리 절사/올림
+            # [필수] 부동소수점 오차 보정 (70.07 * 100 = 7006.999999999999 방지)
             if price >= 1.0:
-                return math.ceil(price * 100) / 100.0 if order_type == "BUY" else math.floor(price * 100) / 100.0
+                scaled = round(price * 100, 6)
+                return (math.ceil(scaled) if order_type == "BUY" else math.floor(scaled)) / 100.0
             else:
-                return math.ceil(price * 10000) / 10000.0 if order_type == "BUY" else math.floor(price * 10000) / 10000.0
+                scaled = round(price * 10000, 6)
+                return (math.ceil(scaled) if order_type == "BUY" else math.floor(scaled)) / 10000.0
         else:
             # 한국 주식 호가단위
             # KOSPI/KOSDAQ 공용 간소화 틱 사이즈 (원 단위 정수)
@@ -349,12 +352,13 @@ class TossBroker(Broker):
             else:
                 tick = 1000
 
+            scaled = round(price / tick, 6)
             if order_type == "BUY":
                 # 호가 단위에 맞게 올림
-                return float(math.ceil(price / tick) * tick)
+                return float(math.ceil(scaled) * tick)
             else:
                 # 호가 단위에 맞게 내림
-                return float(math.floor(price / tick) * tick)
+                return float(math.floor(scaled) * tick)
 
     def place_order(self, symbol: str, price: float, qty: float, order_type: Literal["BUY", "SELL"], price_type: str = "00", strategy: str = "MANUAL") -> bool:
         """주문 발송 (POST /api/v1/orders)"""
