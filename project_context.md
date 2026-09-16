@@ -282,9 +282,38 @@
     $$\text{limit\_star\_buy} = \min(\text{calc\_buy\_price}, \text{loc\_sell\_ref} + \text{loc\_buy\_offset})$$
   - 이를 통해 매도가 $70.07일 때 매수는 항상 $70.06 이하로 확정되어 자전거래 및 호가 역전을 원천 차단했습니다.
 
+
 ### 14.3. 대시보드 UI 조건표와 백엔드 엔진 계산식 100% 동기화
 - **문제점:**
   - 대시보드(`dashboard.py`) 조건표에서는 호가 단위 보정(올림/절사)을 거치지 않고 `format_currency`(`:.2f` 단순 반올림)를 사용하여 화면에는 매도가 **$70.08**, 매수가 **$70.07**로 잘못 표시되어 실제 주문 가격과 불일치했습니다.
 - **수정 ([dashboard.py](file:///d:/Python_D/tossinvest/dashboard.py)):**
   - 대시보드 매수/매도 조건표 계산에도 백엔드 엔진과 동일하게 `ActiveBroker.adjust_price_by_tick`과 자전거래 방지 오프셋 제약을 적용하여, 대시보드 조건표(매도 $70.07, 매수 $70.06)와 실제 제출 주문이 오차 없이 100% 일치하도록 개선했습니다.
+
+---
+
+## 15. 무한매수법 V4.0 리버스 모드 무한 재귀 핑퐁 루프 원천 차단 및 체결 T 동기화 보완 [2026년 9월 16일 수요일]
+
+### 15.1. 문제 배경: 프리마켓 세션 리버스 모드 진입/종료 무한 재귀(Infinite Recursion) 루프
+- **현상:**
+  - 20:05 미국 프리마켓 매도 세션(`SELL_LIMIT_ONLY`) 중, TQQQ 전략이 `[CA V4.0 리버스 모드 가동]` ↔ `[CA V4.0 일반 모드 복귀]`를 0.1초 단위로 무한히 반복하여 텔레그램 메시지 폭주 및 프로세스 정지 발생.
+- **원인 분석:**
+  1. **체결 동기화 시 분모 누락 ([core/database.py](file:///d:/Python_D/tossinvest/core/database.py)):** `save_trade_record`에서 CA 전략 체결 시 $T$를 계산할 때, V4.0의 축소된 유동 매수금(`unit_buy_amount` = $54.64)으로 총 투자금($2,077.68)을 나누면서 $T$가 **38.1회차**로 왜곡되어 DB에 저장됨.
+  2. **재귀 호출 구조 ([core/cavr.py](file:///d:/Python_D/tossinvest/core/cavr.py)):** 리버스 루틴(`_run_reverse_mode_routine`)에서 손실률(-3.86%)이 복귀 기준(-15%)보다 양호하여 NORMAL 복귀 후 `return self.run_cycle()`을 재귀 호출함. 그러나 $T$값이 여전히 38.1 (> 19)이므로 재호출된 사이클 첫머리에서 즉시 리버스로 재진입하며 무한 재귀 루프 형성.
+  3. **순서 배치 오류:** 브로커로부터 실제 잔고/누적매수액을 조회하여 $T$값을 최신화(13.85회차)하는 코드가 리버스 모드 판정보다 뒤에 있어 왜곡된 캐시값이 정정될 기회를 박탈당함.
+  4. **프리마켓 세션 필터 부재:** `SELL_LIMIT_ONLY` 세션에서 미국장 리버스 모드 스킵 처리가 누락됨.
+
+### 15.2. 해결 조치
+- **체결 동기화 분모 교체 ([core/database.py](file:///d:/Python_D/tossinvest/core/database.py)):**
+  - `save_trade_record()` 내 $T$ 계산 시 `base_unit_buy = cycle_budget / a_default`를 분모로 사용하도록 일원화하여 $T$ 왜곡 원천 차단.
+- **재귀 호출 완전 제거 및 상태 전이 방어 ([core/cavr.py](file:///d:/Python_D/tossinvest/core/cavr.py)):**
+  - `_run_reverse_mode_routine`에서 `return self.run_cycle(...)` 재귀 호출을 전면 제거하고 상태 저장 후 안전 종료.
+  - 당일 리버스 모드를 탈출한 경우 재진입을 차단하는 세션 플래그(`_reverse_exited_today = True`) 도입.
+  - $T > a - 1$ 이더라도 손실률이 이미 회복 기준(`loss_pct > recovery_threshold`) 이상인 경우 리버스 모드로 불필요하게 진입하지 않도록 방어.
+- **T값 최신화 선행 배치 ([core/cavr.py](file:///d:/Python_D/tossinvest/core/cavr.py)):**
+  - 브로커 잔고 및 누적 매수액 기반 $T$값 갱신을 V4.0 유동 매수금 계산 및 리버스 모드 진입 판정보다 앞단에 배치.
+- **`SELL_LIMIT_ONLY` 필터 대응 ([core/cavr.py](file:///d:/Python_D/tossinvest/core/cavr.py)):**
+  - 프리마켓 등 지정가 매도 전용 세션에서는 리버스 모드 루틴 전체를 스킵하도록 처리.
+- **TQQQ DB 상태 정정 ([data/cavr.db](file:///d:/Python_D/tossinvest/data/cavr.db)):**
+  - 비정상 $T$값(38.1)을 실제 체결 기준의 **13.85회차**로 정정하고, 운용 모드를 `NORMAL`, 유동 매수금 $36.56, 당일 기준 Star% +2.15%로 복구 완료.
+
 

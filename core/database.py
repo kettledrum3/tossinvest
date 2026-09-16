@@ -1100,10 +1100,12 @@ def sync_trade_history_db(symbol, executions, strategy=None, market="US", strate
                         state_dict['total_shares'] = new_total_qty
                         state_dict['avg_price'] = new_avg
                         
-                        unit_buy = float(state_dict.get('unit_buy_amount', 0))
-                        if unit_buy > 0:
+                        a_def = float(state_dict.get('a_default', 40) or 40)
+                        c_budget = float(state_dict.get('cycle_budget', 0.0) or 0.0)
+                        base_unit_buy = (c_budget / a_def) if (c_budget > 0 and a_def > 0) else float(state_dict.get('unit_buy_amount', 0))
+                        if base_unit_buy > 0:
                             invested = new_total_qty * new_avg
-                            state_dict['current_turn'] = math.ceil((invested / unit_buy) * 10) / 10.0
+                            state_dict['current_turn'] = math.ceil((invested / base_unit_buy) * 10) / 10.0
                         
                         new_turn = state_dict.get('current_turn', 0.0)
                         cursor.execute('''
